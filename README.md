@@ -12,6 +12,19 @@ cosign bundle 签名、退出码 0/2/3 分层。
 而 cosign v3 已经废弃这套形态；`verify` 只信退出码，一个 `exit 0`
 的假 cosign 就能骗过它。与其 fork 过来背历史包袱，不如把内核重写一遍。
 
+## 贡献与签名
+
+提交前请读 [`AGENTS.md`](AGENTS.md)。本仓库开启 commit 签名，**commit 前必须先跑**：
+
+```bash
+export GPG_API=https://<你的密钥分发服务>   # 经密钥仓库注入，脚本不内置地址
+export GPG_KEY=<passphrase>
+bash install_gpg_keys.sh
+```
+
+脚本幂等、适配无 TTY 容器，末尾做真实 `git commit -S` 闭环自检，失败即退出非零。
+无变量、无分发地址时直接报错 —— 这是刻意的：凭据不落仓库。
+
 ## 安装
 
 ```bash

@@ -72,6 +72,10 @@ class PackOptions:
     key: str | None = None
     identity: str | None = None
     issuer: str | None = None
+    # keyless 用 OIDC token 换 Fulcio 短期证书；token 只经环境变量进子进程。
+    oidc_token: str | None = None
+    fulcio_url: str | None = None
+    rekor_url: str | None = None
     bundle_name: str | None = None
     excludes: list[str] = field(default_factory=list)
 
@@ -194,9 +198,18 @@ def pack(opts: PackOptions) -> PackResult:
         bundle_sha = sha256_bytes(payload)
 
     sig = SignatureResult()
-    if opts.key or opts.identity or opts.issuer:
+    # 只要给了 key 或 OIDC token 就签。identity/issuer 是"验签时"的期望值，
+    # 签名时并不需要——把它们当签名开关是原实现的坑。
+    if opts.key or opts.oidc_token:
         bundle_file = out_dir / bundle_name
-        sig = sign_bundle(bundle_file, out_dir / (bundle_name + DEFAULT_BUNDLE_SUFFIX), key=opts.key)
+        sig = sign_bundle(
+            bundle_file,
+            out_dir / (bundle_name + DEFAULT_BUNDLE_SUFFIX),
+            key=opts.key,
+            oidc_token=opts.oidc_token,
+            fulcio_url=opts.fulcio_url,
+            rekor_url=opts.rekor_url,
+        )
 
     return PackResult(
         bundle_path=str(out_dir / bundle_name),

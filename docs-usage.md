@@ -113,8 +113,58 @@ steps:
 
 ## CNB
 
-本仓库跑在 CNB 上，`.cnb.yml` 里同理：`pack` 之后把 sha256 写进制品或评论，
-签名用 `cosign sign-blob --bundle`。
+本仓库跑在 CNB 上。CNB 的流水线可以拿到 OIDC token，于是不需要托管任何私钥：
+
+```yaml
+main:
+  push:
+    - stages:
+        - name: 打包并 keyless 签名
+          script: |
+            pip install evidence-pack
+            export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
+            evidence-pack pack --repo . --include dist --include configs \
+              --sbom auto --oidc-token-env CNB_OIDC_TOKEN
+        - name: 登记锚点
+          script: |
+            sha256sum dist/*.tar.gz > anchor.txt   # 存到包外：制品库 / 审计库
+```
+
+token 由平台注入到 `CNB_OIDC_TOKEN`（变量名按平台实际给的那个填）。
+**别把 token 写进 `.cnb.yml`**，也别用 `--oidc-token` 直接把字面量贴在命令里 ——
+`.cnb.yml` 和作业日志都是公开可读的。
+
+验签一侧：
+
+```bash
+evidence-pack verify dist/x.tar.gz \
+  --signature-bundle dist/x.tar.gz.sigstore.json \
+  --identity "https://cnb.cool/<org>/<repo>/-/build.yml@refs/heads/main" \
+  --issuer "https://oidc.cnb.cool" \
+  --expect-sha256 "$ANCHOR"
+```
+
+identity 要和签名那次**完全一致**：workflow 文件路径 + ref。改了流水线文件名，
+历史 bundle 就验不过了 —— 这是特性，不是 bug。
+
+## GitHub Actions 的 keyless 写法
+
+```yaml
+permissions:
+  contents: read
+  id-token: write            # 换 OIDC token 必需，少这一行只会得到空 token
+
+steps:
+  - run: pip install evidence-pack
+  - run: |
+      evidence-pack pack --repo . --include dist \
+        --oidc-token-env SIGSTORE_ID_TOKEN
+    env:
+      SIGSTORE_ID_TOKEN: ${{ steps.oidc.outputs.token }}   # 或直接让 cosign 自取
+```
+
+GitHub 上 cosign 能自动从 Actions 拿 token，不必显式传；显式传的好处是
+`--oidc-token-env` 名字写死在命令里，签名身份来源可审计。
 
 ```yaml
 main:

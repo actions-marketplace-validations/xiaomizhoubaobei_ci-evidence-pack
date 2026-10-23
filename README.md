@@ -106,9 +106,13 @@ evidence-pack pack --repo . --include dist --include configs --sbom auto
 # 用 cosign key 模式签名（只产 .sigstore.json）
 COSIGN_PASSWORD=... evidence-pack pack --repo . --include dist --key cosign.key
 
-# keyless 签名（CI 里需要有 OIDC token；--identity/--issuer 只写期望值进包）
-evidence-pack pack --repo . --include dist --sign \
+# keyless：用 OIDC token 换 Fulcio 短期证书签名（CI 里的主路径）
+export SIGSTORE_ID_TOKEN=<平台注入的 OIDC token>
+evidence-pack pack --repo . --include dist --sign --oidc-token-env SIGSTORE_ID_TOKEN \
   --identity "https://github.com/org/repo/.github/workflows/ci.yml@refs/heads/main"
+
+# key 模式（持钥签名）
+evidence-pack pack --repo . --include dist --sign --key cosign.key
 
 # 不签（此时必须有包外锚点才算证据）
 evidence-pack pack --repo . --include dist
@@ -130,6 +134,48 @@ evidence-pack verify bundle.tar.gz \
 # 只取结论，不让退出码中断流水线（Action 内部就是这么用的）
 evidence-pack verify bundle.tar.gz --expect-sha256 <hex> --exit-code --json
 ```
+
+## keyless：OIDC 换短期证书
+
+没有长期私钥可管，身份来自 CI 平台签发的 OIDC token：
+
+1. 平台给流水线一张 token，里面 `sub` 写着"谁在跑"（workflow 路径 + ref），
+   `iss` 写着"谁签发的"（平台的 OIDC issuer）；
+2. cosign 拿 token 找 Fulcio 换一张**十几分钟就过期**的证书，私有钥当场生成、签完即弃；
+3. 签名连同证书链、Rekor 条目一起封进 `.sigstore.json`。
+
+所以 keyless 的信任根不是密钥，而是**那对 (identity, issuer)**。验签时必须同时给：
+
+```bash
+evidence-pack verify bundle.tar.gz \
+  --signature-bundle bundle.tar.gz.sigstore.json \
+  --identity "https://cnb.cool/<org>/<repo>/-/build.yml@refs/heads/main" \
+  --issuer "https://oidc.cnb.cool"
+```
+
+identity 请写死到具体流水线文件，别用通配 —— 宽匹配等于让别人拿同一 issuer 下的
+任意 workflow 冒充你。
+
+### token 从哪进
+
+| 写法 | 用途 |
+|---|---|
+| `--oidc-token-env VAR` | **推荐**。从环境变量读，token 只进子进程环境 |
+| `--oidc-token <jwt>` | 仅本地调试。会进命令行历史、`ps` 和作业日志 |
+
+两条来源同时给会直接判 1。变量存在但为空同样判 1 —— CI 里权限没开、secret 没配
+是最常见的事故，静默当成"没签"比报错危险得多。
+
+token 只经 `SIGSTORE_ID_TOKEN` 进子进程，**从不拼进 argv**。私有 Fulcio / Rekor 用
+`--fulcio-url` / `--rekor-url` 指过去，验签侧必须用同一套根，否则证书链对不上判 2。
+
+### 短期证书的边界
+
+证书窗口很短，所以判定也短：
+
+- keyless 签出的 bundle **必须**带证书链和 tlog 条目，缺一样判 3（Fulcio/Rekor 没通）
+- 验签时 Rekor 记录的签名时刻若落在证书有效期之外，判 2 —— 那不是这张证书签的
+- `--insecure-ignore-tlog` 可以跳过 tlog，但结果里 `tlog_checked` 会是 `false`，如实标注
 
 ## 退出码
 

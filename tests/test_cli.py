@@ -4,6 +4,7 @@
 原项目 4/8 测试就是这么红的。用 pytest 的 tmp_path 更稳。
 """
 
+import base64
 import json
 import os
 import subprocess
@@ -136,10 +137,33 @@ def test_identity_is_binding_not_sign_request(tmp_path):
     assert json.loads(js.stdout)["signed"] is False
 
 
+def _fake_oidc_token() -> str:
+    """形状合法的假 JWT：三段式、足够长。cosign 缺失的用例不需要它真能验。"""
+    header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').decode().rstrip("=")
+    payload = base64.urlsafe_b64encode(json.dumps({
+        "iss": "https://token.actions.githubusercontent.com",
+        "sub": "https://github.com/o/r/.github/workflows/ci.yml@refs/heads/main",
+        "aud": "sigstore",
+        "pad": "x" * 60,
+    }).encode()).decode().rstrip("=")
+    return f"{header}.{payload}.{'c2lnbmF0dXJl' * 4}"
+
+
 def test_sign_flag_without_cosign_is_exit_3(tmp_path):
+    """cosign 缺失属于工具异常（3）：环境坏了，不是证据有问题。"""
     r = repo(tmp_path)
     js = run("pack", "--repo", str(r), "--out", "dist", "--include", "src", "--sbom", "none",
-             "--sign", "--json", cwd=r,
+             "--sign", "--oidc-token", _fake_oidc_token(), "--json", cwd=r,
              env={"PATH": "/nonexistent", "SOURCE_DATE_EPOCH": "1700000000"},
              expect=EXIT_TOOL_FAILURE)
     assert "cosign" in json.loads(js.stdout)["error"]
+
+
+def test_sign_without_token_is_exit_1(tmp_path):
+    """要求签名却没有任何 OIDC token：用法错（1），不该留到 cosign 抛难懂的报错变 3。"""
+    r = repo(tmp_path)
+    js = run("pack", "--repo", str(r), "--out", "dist", "--include", "src", "--sbom", "none",
+             "--sign", "--json", cwd=r,
+             env={"SOURCE_DATE_EPOCH": "1700000000"}, expect=EXIT_USAGE)
+    payload = json.loads(js.stdout)
+    assert payload["error_kind"] == "usage" and "OIDC" in payload["error"]

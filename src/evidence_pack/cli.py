@@ -24,6 +24,7 @@ from .errors import (
     EvidenceError,
 )
 from .packer import PackOptions, pack as run_pack
+from .signing import DEFAULT_FULCIO_URL, DEFAULT_REKOR_URL, resolve_oidc_token
 from .verifier import VerifyOptions, verify as run_verify
 
 app = typer.Typer(add_completion=False, help="Deterministic, verifiable CI evidence bundles.")
@@ -66,6 +67,16 @@ def pack(
         False, "--sign",
         help="要求签名：给了 --key 走 key 模式，否则走 keyless（需 OIDC token / id-token: write）",
     ),
+    oidc_token_env: str = typer.Option(
+        None, "--oidc-token-env",
+        help="从该环境变量读 OIDC token，换 Fulcio 短期证书（keyless 推荐用法）",
+    ),
+    oidc_token: str = typer.Option(
+        None, "--oidc-token",
+        help="直接给 OIDC token（会进命令行历史与 ps，仅建议本地调试）",
+    ),
+    fulcio_url: str = typer.Option(None, "--fulcio-url", help=f"Fulcio 地址，默认 {DEFAULT_FULCIO_URL}"),
+    rekor_url: str = typer.Option(None, "--rekor-url", help=f"Rekor 地址，默认 {DEFAULT_REKOR_URL}"),
     identity: str = typer.Option(None, "--identity", help="期望签发身份，写进 metadata/binding.json 供验签方核对"),
     issuer: str = typer.Option(None, "--issuer", help="期望 OIDC issuer，同上"),
     bundle_name: str = typer.Option(None, "--bundle-name", help="自定义包名"),
@@ -83,6 +94,9 @@ def pack(
             key=key,
             identity=identity,
             issuer=issuer,
+            oidc_token=resolve_oidc_token(oidc_token, oidc_token_env),
+            fulcio_url=fulcio_url,
+            rekor_url=rekor_url,
             bundle_name=bundle_name,
             excludes=list(exclude or []),
             sign=sign,
@@ -99,6 +113,10 @@ def pack(
             "signed": result.signature.signed,
             "signature_mode": result.signature.mode,
             "signature_bundle": result.signature.bundle_path,
+            "certificate_identity": result.signature.certificate_identity,
+            "certificate_issuer": result.signature.certificate_issuer,
+            "cert_not_before": result.signature.cert_not_before,
+            "cert_not_after": result.signature.cert_not_after,
         }, quiet_line=result.bundle_path, quiet=quiet, as_json=as_json)
     except EvidenceError as exc:
         _fail(exc, as_json=as_json)
@@ -152,6 +170,9 @@ def verify(
             "anchored": result.anchored,
             "tlog_checked": result.signature.tlog_checked,
             "signature_mode": result.signature.mode,
+            "certificate_identity": result.signature.certificate_identity,
+            "cert_not_before": result.signature.cert_not_before,
+            "cert_not_after": result.signature.cert_not_after,
             "file_count": result.file_count,
             "repo": result.repo,
             "source_date_epoch": result.source_date_epoch,

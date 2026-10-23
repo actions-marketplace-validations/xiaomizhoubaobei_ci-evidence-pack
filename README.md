@@ -61,7 +61,32 @@ steps:
 Action 是 composite 的，不往调用方的解释器里 `pip install`，只把本仓库的
 `src` 塞进 `PYTHONPATH`；cosign 只在 `sign: true` 时才装。
 
-完整示例见 [`examples/`](examples)：最小可用、keyless 签名、下游校验各一份。
+完整示例见 [`examples/`](examples)：**发版即取证**（`release.yml`，照抄即可）、
+最小可用、keyless 签名、下游校验各一份。
+
+只想尽快用起来，直接把 [`examples/release.yml`](examples/release.yml) 复制到
+你仓库的 `.github/workflows/` 下，然后改两处：`include` 里的产物路径、
+以及（可选）`COSIGN_KEY_B64` / `COSIGN_PUBLIC_KEY_B64` / `COSIGN_PASSWORD`
+三个 secret。没配密钥也能跑，会退化成「无签名 + sha256 锚点」。
+
+### 关于 `expect-repo`
+
+包内若记了 git remote，`expect-repo` 就据此核对，不符判 2；
+包内没有 remote 元数据（`actions/checkout` 检出的默认形态、以及剥离了 `.git`
+的构建上下文都是这样）时，**不判无效**，而是在 `anchor_warnings` 里说明
+「这条锚点没起作用」。缺元数据是采集环境的问题，不是篡改的证据。
+
+### 关于 SBOM
+
+`sbom: auto` 认出 Python 项目后，依赖清单按这个顺序取：
+`requirements.txt` → `poetry.lock`/`pipenv`（交给 cyclonedx-py）→
+`pyproject.toml` 的 PEP 621 依赖表。都没有才判 3。
+Action 会按项目类型自动补装 `cyclonedx-bom` / `@cyclonedx/cyclonedx-npm`，
+Python 3.10 还会补 `tomli`（标准库 `tomllib` 要 3.11 才有）。
+
+扫描器自带的 `metadata.timestamp` 与 `serialNumber` 会被归一化：
+前者取 `SOURCE_DATE_EPOCH`，后者由内容派生。不这么做，
+同一个 commit 打两次包会得到两个哈希 —— 可复现就是句空话。
 
 ## 安装（本地 / 脚本调用）
 

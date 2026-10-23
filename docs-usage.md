@@ -129,6 +129,35 @@ main:
               --expect-sha256 "$sha" --exit-code --json
 ```
 
+## 发版场景：照抄这一份
+
+[`examples/release.yml`](examples/release.yml) 覆盖的是最常见的发版诉求：
+打 tag → 打包产物 → 签名 → 自检 → 挂到 Release，并把 sha256 写进 Release 正文。
+
+需要你改的只有两处：
+
+1. `include` 里的产物路径（`dist/` 换成你真实的产物目录）
+2. 三个 secret（可选）：`COSIGN_KEY_B64`、`COSIGN_PUBLIC_KEY_B64`、`COSIGN_PASSWORD`
+
+密钥用 base64 存，是因为 PEM 里的换行经 YAML / JSON 一转手很容易被吃掉，
+而「少了换行的私钥」只会报一句难以理解的解析错误。
+
+```bash
+base64 -w0 cosign.key   # 填进 COSIGN_KEY_B64
+base64 -w0 cosign.pub   # 填进 COSIGN_PUBLIC_KEY_B64
+```
+
+没配密钥也照样跑：`sign` 会留空，退化成「无签名 + sha256 锚点」模式。
+
+## 关于 `expect-repo` 的边界
+
+包内记了 git remote 就核对，不符判 2 —— 这条没得商量。
+
+包内**没有** remote 元数据时不再判 2。`actions/checkout` 检出的工作区、
+剥离了 `.git` 的构建上下文都属于这种情况，这是采集环境的问题，不是
+篡改的证据。此时会在 `anchor_warnings` 里留一句「这条锚点没起作用」，
+让 `anchored: true` 的成色不被误解成「仓库身份也核对过了」。
+
 ## 退出码怎么用
 
 流水线上只认 0：

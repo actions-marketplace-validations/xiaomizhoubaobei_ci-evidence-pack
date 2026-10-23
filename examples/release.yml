@@ -1,0 +1,103 @@
+# 发版即取证：打 tag / 手动触发 → 打包产物 → 签名 → 自检 → 挂到 Release。
+#
+# 这是「照抄就能跑」的那一份：除了把你自己的产物路径填进 include，
+# 不需要改任何其他东西。没配 cosign 密钥时也不会红。
+#
+# 先说清一件事：没签名时，自检回送的是刚打出来的包摘要，那只够证明
+# 「步骤之间没被动过」，属于自己给自己发证。真正的包外锚点由最后一步
+# 把 sha256 写进 Release 正文 + 上传 artifact 完成 —— 下游核对时从
+# 那里读，而不是从包里翻出来再回填。
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # 挂 Release 需要
+  id-token: write   # keyless 签名需要；没有它签名会走 key 模式或无签名
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 取全历史，SOURCE_DATE_EPOCH 才能稳定落到 commit 时间
+
+      # ↓↓↓ 换成你自己的构建步骤 ↓↓↓
+      - name: 构建
+        run: |
+          mkdir -p dist
+          python -m pip install --upgrade build
+          python -m build --wheel --outdir dist
+      # ↑↑↑ 上面这两行是唯一需要你改的地方 ↑↑↑
+
+      # cosign 的签名密钥是**文件**，不是字符串：先把 secret 落成临时文件，
+      # 再把路径交给 Action。没有配这对 secret 就整个跳过，走无签名模式。
+      - name: 准备 cosign 密钥（没配则跳过）
+        id: cosign
+        env:
+          COSIGN_KEY_B64: ${{ secrets.COSIGN_KEY_B64 }}
+          COSIGN_PUBLIC_KEY_B64: ${{ secrets.COSIGN_PUBLIC_KEY_B64 }}
+        run: |
+          set -euo pipefail
+          # 用 base64 存 secret：PEM 里的换行经过 YAML/JSON 很容易被吃掉，
+          # 而一个「少了换行的私钥」只会报一句难以理解的解析错误。
+          if [ -z "${COSIGN_KEY_B64:-}" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::未配置 COSIGN_KEY_B64，本次不签名 —— 以 sha256 锚点为准"
+            exit 0
+          fi
+          umask 077
+          mkdir -p _keys
+          printf '%s' "$COSIGN_KEY_B64" | base64 -d > _keys/cosign.key
+          printf '%s' "$COSIGN_PUBLIC_KEY_B64" | base64 -d > _keys/cosign.pub
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+
+      - name: 生成证据包
+        id: evidence
+        uses: XMZZUZHI/Github/ci-evidence-pack@main
+        with:
+          include: |
+            dist/
+            pyproject.toml
+          sbom: auto
+          # 无签名时的信任根：把 sha256 登记到包外的台账（会作为 artifact 上传）
+          anchor-file: _evidence/anchor.txt
+          # 配了密钥就签：签名用私钥、验签用公钥，别拿私钥去验
+          sign: ${{ steps.cosign.outputs.configured }}
+          cosign-key: ${{ steps.cosign.outputs.configured == 'true' && '_keys/cosign.key' || '' }}
+          cosign-public-key: ${{ steps.cosign.outputs.configured == 'true' && '_keys/cosign.pub' || '' }}
+          # 显式给出期望仓库：包内若记了 remote 就核对，没记则只留告警不判红
+          expect-repo: ${{ github.repository }}
+        env:
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          verify: 'true'
+
+      - name: 把证据包挂到 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 \
+            || gh release create "${GITHUB_REF_NAME}" --generate-notes
+          gh release upload "${GITHUB_REF_NAME}" \
+            "${{ steps.evidence.outputs.bundle-path }}" \
+            "${{ steps.evidence.outputs.signature-bundle }}" \
+            --clobber
+          # 锚点也贴进 Release 正文：将来核对时从包外读，而不是从包里翻。
+          gh release view "${GITHUB_REF_NAME}" --json body -q .body > body.md
+          {
+            echo ""
+            echo "### 证据包锚点"
+            echo ""
+            echo "- sha256: \`${{ steps.evidence.outputs.bundle-sha256 }}\`"
+            echo "- 签名: ${{ steps.evidence.outputs.signature-mode || '未签名（以 sha256 为锚点）' }}"
+          } >> body.md
+          gh release edit "${GITHUB_REF_NAME}" --notes-file body.md
+
+      - name: 清掉临时密钥
+        if: always()
+        run: rm -rf _keys

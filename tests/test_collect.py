@@ -46,7 +46,7 @@ def test_output_dir_itself_cannot_be_included(tmp_path):
     repo = _repo(tmp_path)
     stage = tmp_path / "stage"
     stage.mkdir()
-    with pytest.raises(UsageError, match="排除规则"):
+    with pytest.raises(UsageError, match="输出目录自身"):
         Collector(repo, repo / "dist").collect(["dist"], stage)
 
 
@@ -68,3 +68,32 @@ def test_default_excludes_skip_git_and_node_modules(tmp_path):
     stage.mkdir()
     result = Collector(repo, repo / "dist").collect(["src"], stage)
     assert all(not p.startswith((".git", "node_modules")) for p in result.rel_paths)
+
+
+def test_explicit_include_wins_over_default_excludes(tmp_path):
+    """`--include dist` 是最常见的用法，默认排除名单不该把它挡死。"""
+    repo = _repo(tmp_path)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    result = Collector(repo, tmp_path / "out").collect(["dist"], stage)
+    assert result.rel_paths == ["dist/old.tar.gz"]
+
+
+def test_nested_excluded_dir_inside_included_root_is_still_skipped(tmp_path):
+    repo = _repo(tmp_path)
+    (repo / "src" / "node_modules").mkdir()
+    (repo / "src" / "node_modules" / "x.js").write_text("x")
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    result = Collector(repo, tmp_path / "out").collect(["src"], stage)
+    assert result.rel_paths == ["src/a.py"]
+
+
+def test_git_dir_is_never_collected_even_if_named(tmp_path):
+    repo = _repo(tmp_path)
+    (repo / ".git").mkdir()
+    (repo / ".git" / "config").write_text("x")
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    with pytest.raises(UsageError, match="不可收范围"):
+        Collector(repo, tmp_path / "out").collect([".git"], stage)

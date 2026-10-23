@@ -20,8 +20,12 @@ from evidence_pack.errors import (
 )
 
 
+SRC = str(Path(__file__).resolve().parents[1] / "src")
+
+
 def run(*args, cwd=None, env=None, expect=None):
-    full_env = dict(os.environ, **(env or {}))
+    # 测试不该依赖「有没有 pip install -e .」：直接把 src 塞进 PYTHONPATH。
+    full_env = dict(os.environ, PYTHONPATH=SRC, **(env or {}))
     proc = subprocess.run(
         [sys.executable, "-m", "evidence_pack.cli", *args],
         capture_output=True, text=True, cwd=cwd, env=full_env,
@@ -93,3 +97,49 @@ def test_missing_cosign_is_exit_3(tmp_path):
 
 def test_verify_usage_error_when_bundle_missing(tmp_path):
     run("verify", str(tmp_path / "nope.tar.gz"), "--json", expect=EXIT_USAGE)
+
+
+def _pack(tmp_path: Path, *extra: str) -> str:
+    r = repo(tmp_path)
+    return run("pack", "--repo", str(r), "--out", "dist", "--include", "src",
+               "--sbom", "none", "--quiet", *extra,
+               cwd=r, env={"SOURCE_DATE_EPOCH": "1700000000"}, expect=EXIT_OK).stdout.strip()
+
+
+def test_verify_exit_code_mode_never_fails_the_process(tmp_path):
+    """Action 需要「拿到判定再决定」，不能让退出码把后续步骤掐掉。"""
+    bundle = _pack(tmp_path)
+    js = run("verify", bundle, "--exit-code", "--json", expect=EXIT_OK)
+    payload = json.loads(js.stdout)
+    assert payload["ok"] is False
+    assert payload["exit_code"] == EXIT_EVIDENCE_INVALID
+    assert payload["bundle_sha256"], "失败也要带出 sha256，Action 要拿它登记锚点"
+
+
+def test_verify_exit_code_mode_reports_success(tmp_path):
+    import hashlib
+
+    bundle = _pack(tmp_path)
+    sha = hashlib.sha256(Path(bundle).read_bytes()).hexdigest()
+    js = run("verify", bundle, "--expect-sha256", sha, "--exit-code", "--json", expect=EXIT_OK)
+    payload = json.loads(js.stdout)
+    assert payload["ok"] is True and payload["exit_code"] == EXIT_OK and payload["anchored"] is True
+
+
+def test_identity_is_binding_not_sign_request(tmp_path):
+    """--identity/--issuer 只写期望，不该偷偷把打包拖进签名路径（CI 无 OIDC 会炸）。"""
+    r = repo(tmp_path)
+    js = run("pack", "--repo", str(r), "--out", "dist", "--include", "src", "--sbom", "none",
+             "--identity", "https://github.com/o/r/.github/workflows/ci.yml@refs/heads/main",
+             "--issuer", "https://token.actions.githubusercontent.com",
+             "--json", cwd=r, env={"SOURCE_DATE_EPOCH": "1700000000"}, expect=EXIT_OK)
+    assert json.loads(js.stdout)["signed"] is False
+
+
+def test_sign_flag_without_cosign_is_exit_3(tmp_path):
+    r = repo(tmp_path)
+    js = run("pack", "--repo", str(r), "--out", "dist", "--include", "src", "--sbom", "none",
+             "--sign", "--json", cwd=r,
+             env={"PATH": "/nonexistent", "SOURCE_DATE_EPOCH": "1700000000"},
+             expect=EXIT_TOOL_FAILURE)
+    assert "cosign" in json.loads(js.stdout)["error"]

@@ -56,8 +56,9 @@ def pack(
     collect_git: bool = typer.Option(True, "--collect-git/--no-collect-git"),
     exclude: list[str] = typer.Option(None, "--exclude", help="额外排除的路径名"),
     key: str = typer.Option(None, "--key", help="cosign 私钥路径（key 模式）"),
-    identity: str = typer.Option(None, "--identity", help="keyless 期望身份（签名时不需要，验签时必须）"),
-    issuer: str = typer.Option(None, "--issuer", help="keyless 期望 OIDC issuer"),
+    sign: bool = typer.Option(False, "--sign", help="用 cosign keyless 签名（需 OIDC token / id-token: write）"),
+    identity: str = typer.Option(None, "--identity", help="期望签发身份，写进 metadata/binding.json 供验签方核对"),
+    issuer: str = typer.Option(None, "--issuer", help="期望 OIDC issuer，同上"),
     bundle_name: str = typer.Option(None, "--bundle-name", help="自定义包名"),
     quiet: bool = typer.Option(False, "--quiet", "-q"),
     as_json: bool = typer.Option(False, "--json"),
@@ -75,15 +76,18 @@ def pack(
             issuer=issuer,
             bundle_name=bundle_name,
             excludes=list(exclude or []),
+            sign=sign,
         ))
         _emit({
             "ok": True,
             "bundle_path": result.bundle_path,
+            "bundle_name": Path(result.bundle_path).name,
             "bundle_sha256": result.bundle_sha256,
             "file_count": result.file_count,
             "source_date_epoch": result.source_date_epoch,
             "sbom": result.sbom,
             "signed": result.signature.signed,
+            "signature_mode": result.signature.mode,
             "signature_bundle": result.signature.bundle_path,
         }, quiet_line=result.bundle_path, quiet=quiet, as_json=as_json)
     except EvidenceError as exc:
@@ -100,10 +104,20 @@ def verify(
     ignore_tlog: bool = typer.Option(False, "--insecure-ignore-tlog", help="跳过透明日志校验（结果会标记 tlog_checked=false）"),
     expect_sha256: str = typer.Option(None, "--expect-sha256", help="外部锚点：期望的 bundle sha256"),
     expect_repo: str = typer.Option(None, "--expect-repo", help="外部锚点：期望的 owner/repo"),
+    exit_code: bool = typer.Option(
+        False, "--exit-code",
+        help="只出结论：校验失败也正常结束进程，由调用方看 JSON 里的 exit_code",
+    ),
     quiet: bool = typer.Option(False, "--quiet", "-q"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
     """校验证据包。退出码：0 通过 / 1 用法 / 2 证据无效 / 3 工具异常。"""
+    if exit_code:
+        _verify_reporting(
+            bundle, signature_bundle, key, identity, issuer, ignore_tlog,
+            expect_sha256, expect_repo, quiet, as_json,
+        )
+        return
     try:
         result = run_verify(VerifyOptions(
             bundle_path=bundle,
@@ -130,6 +144,56 @@ def verify(
         }, quiet_line="OK", quiet=quiet, as_json=as_json)
     except EvidenceError as exc:
         _fail(exc, as_json=as_json)
+
+
+def _verify_reporting(
+    bundle: Path,
+    signature_bundle: Path | None,
+    key: str | None,
+    identity: str | None,
+    issuer: str | None,
+    ignore_tlog: bool,
+    expect_sha256: str | None,
+    expect_repo: str | None,
+    quiet: bool,
+    as_json: bool,
+) -> None:
+    """`--exit-code` 模式：结论永远以 JSON / 单行形式输出，进程退出码恒为 0。
+
+    存在的理由只有一个：Action 里要先拿到整体判定再做决策（上传证据、发评论），
+    而不是让一个非零退出码在 set -e 下把后续步骤全掐掉。
+    """
+    result = run_verify(VerifyOptions(
+        bundle_path=bundle,
+        signature_bundle=signature_bundle,
+        key=key,
+        identity=identity,
+        issuer=issuer,
+        ignore_tlog=ignore_tlog,
+        expect_sha256=expect_sha256,
+        expect_repo=expect_repo,
+        exit_code_only=True,
+    ))
+    payload = {
+        "ok": result.ok,
+        "exit_code": result.exit_code,
+        "error": result.error,
+        "error_kind": result.error_kind,
+        "bundle_path": result.bundle_path,
+        "bundle_sha256": result.bundle_sha256,
+        "manifest_verified": result.manifest_verified,
+        "signature_verified": result.signature.verified,
+        "anchored": result.anchored,
+        "tlog_checked": result.signature.tlog_checked,
+        "signature_mode": result.signature.mode,
+        "file_count": result.file_count,
+        "repo": result.repo,
+        "source_date_epoch": result.source_date_epoch,
+    }
+    if quiet and not as_json:
+        typer.echo("OK" if result.ok else f"INVALID({result.exit_code}): {result.error}")
+        return
+    typer.echo(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False))
 
 
 @app.command()

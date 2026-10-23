@@ -19,7 +19,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .errors import EvidenceInvalid, ToolFailure, UsageError
+from .errors import EvidenceError, EvidenceInvalid, ToolFailure, UsageError
 from .fsutil import sha256_file
 from .signing import SignatureResult, verify as verify_signature
 
@@ -28,6 +28,13 @@ MAX_UNPACKED_BYTES = 4 * 1024 * 1024 * 1024  # 4 GiB，防解压炸弹
 
 @dataclass
 class VerifyOptions:
+    """验包参数。
+
+    `exit_code_only` 是给 Action 用的「只看结论」模式：不抛异常，把判定结果
+    原样带出来（含 error），退出码仍由调用方按 errors.py 的三档决定。
+    注意这只是**输出形态**的差别，判定本身一秒都没有放宽。
+    """
+
     bundle_path: Path
     signature_bundle: Path | None = None
     key: str | None = None
@@ -36,12 +43,17 @@ class VerifyOptions:
     ignore_tlog: bool = False
     expect_sha256: str | None = None
     expect_repo: str | None = None
+    exit_code_only: bool = False
 
 
 @dataclass
 class VerifyResult:
     bundle_path: str
     bundle_sha256: str
+    ok: bool = True
+    exit_code: int = 0
+    error: str | None = None
+    error_kind: str | None = None
     manifest_verified: bool = False
     anchored: bool = False
     file_count: int = 0
@@ -154,6 +166,18 @@ def _anchor(result: VerifyResult, opts: VerifyOptions, root: Path) -> None:
         result.anchored = True
 
 
+def read_binding(root: Path) -> dict | None:
+    """读包内声明的期望签名身份（打包方写的期望值，不是信任根）。"""
+    path = root / "metadata" / "binding.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _read_run_meta(root: Path) -> tuple[str | None, int | None]:
     run_file = root / "metadata" / "run.json"
     meta_file = root / "metadata" / "metadata.json"
@@ -173,25 +197,12 @@ def _read_run_meta(root: Path) -> tuple[str | None, int | None]:
     return repo, epoch
 
 
-def verify(opts: VerifyOptions) -> VerifyResult:
+def _verify_once(opts: VerifyOptions) -> VerifyResult:
     bundle_path = opts.bundle_path
     if not bundle_path.is_file():
         raise UsageError(f"bundle 不存在：{bundle_path}")
 
     result = VerifyResult(bundle_path=str(bundle_path), bundle_sha256=sha256_file(bundle_path))
-
-    # 签名的对象必须是**这份文件本身**。所以签验放在解包之前、对着原始路径做。
-    if opts.signature_bundle:
-        if not opts.signature_bundle.is_file():
-            raise UsageError(f"签名 bundle 不存在：{opts.signature_bundle}")
-        result.signature = verify_signature(
-            bundle_path,
-            opts.signature_bundle,
-            key=opts.key,
-            identity=opts.identity,
-            issuer=opts.issuer,
-            ignore_tlog=opts.ignore_tlog,
-        )
 
     with tempfile.TemporaryDirectory(prefix="evidence-verify-") as tmp:
         root = Path(tmp)
@@ -199,6 +210,22 @@ def verify(opts: VerifyOptions) -> VerifyResult:
         result.file_count = check_manifest(root)
         result.manifest_verified = True
         result.repo, result.source_date_epoch = _read_run_meta(root)
+
+        # 签名的对象必须是**这份文件本身**，所以验签对着原始路径做，与解包互不影响。
+        # 解包先做是为了能读到包内声明的期望身份（调用方没显式给时用它兜底）。
+        if opts.signature_bundle:
+            if not opts.signature_bundle.is_file():
+                raise UsageError(f"签名 bundle 不存在：{opts.signature_bundle}")
+            result.signature = verify_signature(
+                bundle_path,
+                opts.signature_bundle,
+                key=opts.key,
+                identity=opts.identity,
+                issuer=opts.issuer,
+                ignore_tlog=opts.ignore_tlog,
+                binding=read_binding(root),
+            )
+
         _anchor(result, opts, root)
 
     if not result.anchored and not result.signature.verified:
@@ -208,3 +235,25 @@ def verify(opts: VerifyOptions) -> VerifyResult:
             "这种包的哈希可以随手重算，不构成证据。"
         )
     return result
+
+
+def verify(opts: VerifyOptions) -> VerifyResult:
+    """验包。`exit_code_only` 时把失败也变成结构化结果返回，不抛异常。"""
+    if not opts.exit_code_only:
+        return _verify_once(opts)
+    try:
+        return _verify_once(opts)
+    except EvidenceError as exc:
+        # 失败也要带上已算出的 sha256：Action 里还要把它当锚点/台账登记。
+        try:
+            digest = sha256_file(opts.bundle_path)
+        except OSError:
+            digest = ""
+        return VerifyResult(
+            bundle_path=str(opts.bundle_path),
+            bundle_sha256=digest,
+            ok=False,
+            exit_code=exc.exit_code,
+            error=str(exc),
+            error_kind=exc.kind,
+        )

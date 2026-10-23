@@ -34,7 +34,7 @@ from .fsutil import (
 from .sbom import generate as generate_sbom
 from .signing import DEFAULT_BUNDLE_SUFFIX, SignatureResult, sign as sign_bundle
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 
 RUN_ENV_KEYS = {
     # GitHub Actions
@@ -64,6 +64,13 @@ RUN_ENV_KEYS = {
 
 @dataclass
 class PackOptions:
+    """打包参数。
+
+    `identity` / `issuer` 在打包阶段只是**期望值**：keyless 签名时它们会被写进
+    metadata/binding.json 供验签方核对，同时透传给 cosign 做签发身份约束。
+    签名本身仍然只由 `--key` 与「是否要求签名」决定，两者互不隐式启用。
+    """
+
     repo_root: Path
     out_dir: Path
     includes: list[str]
@@ -74,6 +81,7 @@ class PackOptions:
     issuer: str | None = None
     bundle_name: str | None = None
     excludes: list[str] = field(default_factory=list)
+    sign: bool = False
 
 
 @dataclass
@@ -84,6 +92,7 @@ class PackResult:
     source_date_epoch: int
     sbom: str
     signature: SignatureResult = field(default_factory=SignatureResult)
+    source_sha256: str = ""      # 签名实际覆盖的字节（与 bundle_sha256 不同：签名在包外）
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -144,6 +153,20 @@ def _default_bundle_name(repo_root: Path, git_meta: dict | None) -> str:
     return f"{slug}_{sha}.tar.gz"
 
 
+def _write_binding_meta(stage_dir: Path, *, identity: str | None, issuer: str | None) -> None:
+    """把「这份证据该由谁签发」写进包内，供验签方对照。
+
+    注意语义：这是**声明**，不是证据。它可以被伪造，所以 verifier 只把它
+    当作"调用方没给 identity 时的兜底期望值"，绝不把它当信任根。
+    """
+    if not identity and not issuer:
+        return
+    write_stable_json(stage_dir / "metadata" / "binding.json", {
+        "identity": identity or "",
+        "issuer": issuer or "",
+    })
+
+
 def pack(opts: PackOptions) -> PackResult:
     repo_root = opts.repo_root.resolve()
     out_dir = opts.out_dir.resolve()
@@ -175,6 +198,8 @@ def pack(opts: PackOptions) -> PackResult:
         if git_meta:
             write_stable_json(meta_dir / "git.json", git_meta)
 
+        _write_binding_meta(stage, identity=opts.identity, issuer=opts.issuer)
+
         sbom_kind = generate_sbom(repo_root, opts.sbom, stage / "sbom" / "sbom.cdx.json")
         if sbom_kind != "none":
             write_stable_json(meta_dir / "deps.json", {"sbom": sbom_kind})
@@ -194,9 +219,13 @@ def pack(opts: PackOptions) -> PackResult:
         bundle_sha = sha256_bytes(payload)
 
     sig = SignatureResult()
-    if opts.key or opts.identity or opts.issuer:
+    if opts.sign or opts.key:
         bundle_file = out_dir / bundle_name
-        sig = sign_bundle(bundle_file, out_dir / (bundle_name + DEFAULT_BUNDLE_SUFFIX), key=opts.key)
+        sig = sign_bundle(
+            bundle_file,
+            out_dir / (bundle_name + DEFAULT_BUNDLE_SUFFIX),
+            key=opts.key,
+        )
 
     return PackResult(
         bundle_path=str(out_dir / bundle_name),
@@ -205,4 +234,5 @@ def pack(opts: PackOptions) -> PackResult:
         source_date_epoch=mtime,
         sbom=sbom_kind,
         signature=sig,
+        source_sha256=bundle_sha,
     )

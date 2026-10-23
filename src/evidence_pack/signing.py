@@ -97,7 +97,13 @@ def _resolve_mode(key: str | None, identity: str | None, issuer: str | None) -> 
 
 def sign(blob: Path, bundle: Path, *, key: str | None = None,
          password: str | None = None) -> SignatureResult:
-    """对 blob 签名，产出 `.sigstore.json`。"""
+    """对 blob 签名，产出 `.sigstore.json`。
+
+    keyless 依赖 runner 提供的 OIDC token（GitHub 上是 `id-token: write`），
+    所以这里不去猜"有没有 token"——拿不到时 cosign 会自己报错，退出码走 3。
+    签发身份由 token 决定，命令行改不了；调用方声明的期望身份只写进
+    metadata/binding.json，在验签阶段核对。
+    """
     cosign = _require_cosign()
     cmd = [cosign, "sign-blob", "--yes", "--bundle", str(bundle)]
     if key:
@@ -152,9 +158,19 @@ def verify(
     issuer: str | None = None,
     ignore_tlog: bool = False,
     password: str | None = None,
+    binding: dict | None = None,
 ) -> SignatureResult:
-    """验签。返回结构化的结果，失败按语义抛 EvidenceInvalid 或 ToolFailure。"""
+    """验签。返回结构化的结果，失败按语义抛 EvidenceInvalid 或 ToolFailure。
+
+    `binding` 是包内 metadata/binding.json 声明的期望身份。它只在调用方
+    没给 identity/issuer 时用来填空：声明值来自包内，本身不构成信任根，
+    真正的信任仍取决于 cosign 对证书链与 tlog 的校验。没填也没声明时，
+    keyless 必须报用法错 —— 那是「接受任何人的签名」，不是验证。
+    """
     cosign = _require_cosign()
+    if not key and not identity and binding:
+        identity = binding.get("identity") or None
+        issuer = binding.get("issuer") or None
     mode = _resolve_mode(key, identity, issuer)
 
     data = _check_bundle_structure(bundle)

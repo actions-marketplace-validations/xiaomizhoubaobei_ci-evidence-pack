@@ -11,6 +11,9 @@ dependencies = ["typer>=0.12,<1.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9"]
+# Python 3.10 没有标准库 tomllib；要从 pyproject.toml 兜底出 SBOM 就得靠它。
+# 3.11+ 不需要，所以是可选的。
+toml = ["tomli>=2,<3; python_version < '3.11'"]
 
 [project.scripts]
 evidence-pack = "evidence_pack.cli:main"

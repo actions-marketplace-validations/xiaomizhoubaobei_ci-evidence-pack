@@ -200,7 +200,11 @@ def pack(opts: PackOptions) -> PackResult:
 
         _write_binding_meta(stage, identity=opts.identity, issuer=opts.issuer)
 
-        sbom_kind = generate_sbom(repo_root, opts.sbom, stage / "sbom" / "sbom.cdx.json")
+        # 把确定性时间戳一路传下去：扫描器自带的 timestamp / serialNumber 若原样落盘，
+        # 同一个 commit 两次打包就有两个哈希，「可复现」当场作废。
+        sbom_kind = generate_sbom(
+            repo_root, opts.sbom, stage / "sbom" / "sbom.cdx.json", epoch=mtime
+        )
         if sbom_kind != "none":
             write_stable_json(meta_dir / "deps.json", {"sbom": sbom_kind})
 

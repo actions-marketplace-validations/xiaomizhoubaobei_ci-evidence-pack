@@ -400,3 +400,61 @@ def test_anchor_then_upload_paths_are_real(workspace):
     anchor_out = _gh_outputs(workspace.parent / "gh-output.txt")
     assert Path(anchor_out["anchor-file"]).is_absolute()
     assert Path(anchor_out["anchor-file"]).is_file()
+
+
+# ---------------------------------------------------------------------------
+# 示例工作流：用户是照抄这些文件用的，所以它们本身也得当被测代码对待。
+# 一个拼错 input 名的示例 = 用户粘过去就红，比没有示例更糟。
+# ---------------------------------------------------------------------------
+
+EXAMPLES = sorted((ROOT / "examples").glob("*.yml"))
+
+
+def test_examples_exist_and_parse():
+    assert EXAMPLES, "examples/ 下至少要有一份能照抄的工作流"
+    for path in EXAMPLES:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert "jobs" in data, f"{path.name} 没有 jobs"
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_example_inputs_are_real_action_inputs(path):
+    """示例里用的 input 名必须真的在 action.yml 里存在。
+
+    这类错误最容易漏：YAML 合法、Action 也不会报错，
+    GitHub 只是把一个不认识的 input 默默忽略掉，然后你对着
+    「为什么 identity 没生效」查半天。
+    """
+    declared = set(_manifest()["inputs"])
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    used: set[str] = set()
+    for job in data["jobs"].values():
+        for step in job.get("steps", []):
+            if "XMZZUZHI/Github/ci-evidence-pack" in str(step.get("uses", "")):
+                used |= set((step.get("with") or {}))
+    unknown = used - declared
+    assert not unknown, f"{path.name} 用了 action.yml 里没有的 input：{sorted(unknown)}"
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_example_outputs_are_real_action_outputs(path):
+    """引用 output 的写错名字同样会静默变成空字符串。"""
+    declared = set(_manifest()["outputs"])
+    text = path.read_text(encoding="utf-8")
+    import re
+
+    used = set(re.findall(r"steps\.[A-Za-z0-9_-]+\.outputs\.([A-Za-z0-9_-]+)", text))
+    # 只看指向 evidence-pack 那个 step 的引用（其它 step 的 output 不归这里管）
+    ep_ids = set()
+    data = yaml.safe_load(text)
+    for job in data["jobs"].values():
+        for step in job.get("steps", []):
+            if "XMZZUZHI/Github/ci-evidence-pack" in str(step.get("uses", "")):
+                if step.get("id"):
+                    ep_ids.add(step["id"])
+    used_ep = {
+        m for m in re.findall(r"steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)", text)
+        if m[0] in ep_ids
+    }
+    unknown = {o for _, o in used_ep} - declared
+    assert not unknown, f"{path.name} 引用了不存在的 output：{sorted(unknown)}"

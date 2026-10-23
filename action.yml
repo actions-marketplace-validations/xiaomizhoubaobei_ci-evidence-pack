@@ -184,6 +184,54 @@ runs:
       if: inputs.sign == 'true'
       uses: sigstore/cosign-installer@v3
 
+    # 为什么要在 Action 里替用户装扫描器：`sbom: auto` 认出一个 Python 项目后，
+    # 若机器上既没有 cyclonedx-py 又只有 pyproject.toml（现代 Python 项目的
+    # 常态），内核会如实报退出码 3 —— 语义没错，但对「开箱即用」是硬伤。
+    # 所以在这里按项目类型把扫描器补齐；装不上仍然由内核判 3，不吞结论。
+    - name: 准备 SBOM 扫描器
+      if: inputs.sbom != 'none'
+      shell: bash
+      env:
+        REPO_ROOT: ${{ github.workspace }}
+        INPUT_SBOM: ${{ inputs.sbom }}
+      run: |
+        set -uo pipefail
+        want="${INPUT_SBOM:-auto}"
+        # auto 时按仓库里的文件判断该装哪一套，与内核的 detect_kind 保持一致。
+        if [ "$want" = "auto" ]; then
+          if [ -f "$REPO_ROOT/pyproject.toml" ] || [ -f "$REPO_ROOT/setup.py" ] \
+             || [ -f "$REPO_ROOT/requirements.txt" ] || [ -f "$REPO_ROOT/poetry.lock" ]; then
+            want=python
+          elif [ -f "$REPO_ROOT/package.json" ]; then
+            want=node
+          else
+            echo "::notice::认不出项目类型，跳过 SBOM 扫描器安装（内核会判 sbom=none）"
+            exit 0
+          fi
+        fi
+        install_failed() {
+          # 装不上不算这一步的失败：按设计，扫描器缺失该由内核判 3。
+          # 在这里提前红掉，会把「工具没装好」和「证据无效」混成同一种颜色。
+          echo "::warning::$1 安装失败，若内核因此判定 3，请检查网络或自行预装"
+          exit 0
+        }
+        if [ "$want" = "python" ]; then
+          # 3.10 没有标准库 tomllib：从 pyproject.toml 兜底 SBOM 要用到 tomli。
+          # 3.11+ 自带，不必装。两个都试一把，装不上就让内核按 3 报出来。
+          if ! python3 -c 'import tomllib' >/dev/null 2>&1 \
+             && ! python3 -c 'import tomli' >/dev/null 2>&1; then
+            python3 -m pip install --quiet 'tomli>=2,<3' \
+              || echo "::warning::tomli 没装上：Python 3.10 从 pyproject.toml 兜底 SBOM 会失败"
+          fi
+          command -v cyclonedx-py >/dev/null 2>&1 && exit 0
+          python3 -m pip install --quiet cyclonedx-bom \
+            || install_failed "cyclonedx-bom"
+        elif [ "$want" = "node" ]; then
+          command -v cyclonedx-npm >/dev/null 2>&1 && exit 0
+          npm install --global --silent @cyclonedx/cyclonedx-npm \
+            || install_failed "@cyclonedx/cyclonedx-npm"
+        fi
+
     - name: 打出证据包
       id: pack
       shell: bash

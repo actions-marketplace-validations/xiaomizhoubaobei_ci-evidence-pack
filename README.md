@@ -25,13 +25,50 @@ bash install_gpg_keys.sh
 脚本幂等、适配无 TTY 容器，末尾做真实 `git commit -S` 闭环自检，失败即退出非零。
 无变量、无分发地址时直接报错 —— 这是刻意的：凭据不落仓库。
 
-## 安装
+## 当 Action 用
+
+```yaml
+permissions:
+  contents: read
+  id-token: write          # keyless 签名必需
+
+steps:
+  - uses: actions/checkout@v4
+  - uses: XMZZUZHI/Github/ci-evidence-pack@main
+    id: evidence
+    with:
+      include: |
+        dist/
+        configs/
+      sbom: auto
+      sign: 'true'
+      identity: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/heads/main
+      anchor-file: _evidence/anchor.txt     # 把 sha256 留在包外
+```
+
+产物与结论都能当 output 用：
+
+| output | 说明 |
+|---|---|
+| `bundle-path` / `bundle-name` | 证据包位置 |
+| `bundle-sha256` | 包外锚点就是它 |
+| `signature-bundle` | `.sigstore.json`，未签名为空 |
+| `signed` | 是否产出了签名 |
+| `verify-ok` / `verify-exit-code` | 自检结论与 0/1/2/3 |
+
+Action 是 composite 的，不往调用方的解释器里 `pip install`，只把本仓库的
+`src` 塞进 `PYTHONPATH`；cosign 只在 `sign: true` 时才装。
+
+完整示例见 [`examples/`](examples)：最小可用、keyless 签名、下游校验各一份。
+
+## 安装（本地 / 脚本调用）
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-验签需要 `cosign` v3+ 在 PATH 上。
+验签需要 `cosign` v3+ 在 PATH 上。SBOM 需要 `cyclonedx-py` / `cyclonedx-npm`；
+Python 项目缺 `cyclonedx-py` 时会退到 `requirements.txt` 的内置解析，不静默出空 SBOM。
 
 ## 用法
 
@@ -42,8 +79,12 @@ evidence-pack pack --repo . --include dist --include configs --sbom auto
 # 用 cosign key 模式签名（只产 .sigstore.json）
 COSIGN_PASSWORD=... evidence-pack pack --repo . --include dist --key cosign.key
 
-# keyless 签名（CI 里，需要有 OIDC token）
-evidence-pack pack --repo . --include dist   # 不签
+# keyless 签名（CI 里需要有 OIDC token；--identity/--issuer 只写期望值进包）
+evidence-pack pack --repo . --include dist --sign \
+  --identity "https://github.com/org/repo/.github/workflows/ci.yml@refs/heads/main"
+
+# 不签（此时必须有包外锚点才算证据）
+evidence-pack pack --repo . --include dist
 
 # 验包：带外部锚点
 evidence-pack verify bundle.tar.gz --expect-sha256 <hex>
@@ -53,6 +94,9 @@ evidence-pack verify bundle.tar.gz \
   --signature-bundle bundle.tar.gz.sigstore.json \
   --identity "https://github.com/org/repo/.github/workflows/ci.yml@refs/heads/main" \
   --issuer "https://token.actions.githubusercontent.com"
+
+# 只取结论，不让退出码中断流水线（Action 内部就是这么用的）
+evidence-pack verify bundle.tar.gz --expect-sha256 <hex> --exit-code --json
 ```
 
 ## 退出码
@@ -73,6 +117,7 @@ artifacts/<rel_path>        收进来的文件，保留仓库内相对路径
 metadata/metadata.json      工具版本、格式版本、SOURCE_DATE_EPOCH
 metadata/run.json           CI 上下文（GitHub / CNB / GitLab，采到就记）
 metadata/git.json           HEAD sha、branch、remote、dirty
+metadata/binding.json       打包方声明的期望签发身份（给了 --identity/--issuer 才有）
 sbom/sbom.cdx.json          CycloneDX（要得到就必须有）
 manifest/inputs.json        输入清单
 manifest/sha256sum.txt      除自身外每个文件的 sha256
@@ -86,6 +131,9 @@ manifest/sha256sum.txt      除自身外每个文件的 sha256
 并返回 2，而不是像常见做法那样吐一个绿色的 0。
 
 证据的信任根必须来自包外：签名，或者调用方手里的锚点。
+
+`metadata/binding.json` 也一样 —— 它是打包方**声明**的期望身份，可以被伪造，
+所以只在调用方没显式给 `--identity/--issuer` 时用来填空，绝不能当信任根。
 
 ## 测试
 

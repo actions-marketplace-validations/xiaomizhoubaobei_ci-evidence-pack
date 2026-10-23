@@ -13,13 +13,85 @@
 
 只做第 2 条、完全不签名，证据依然有意义 —— 前提是你真的把 sha 存到了包外。
 
-## GitHub Actions
+## GitHub Actions：直接用 Action
 
 ```yaml
 permissions:
   contents: read
   id-token: write   # keyless 签名必需
 
+steps:
+  - uses: actions/checkout@v4
+  - uses: XMZZUZHI/Github/ci-evidence-pack@main
+    id: evidence
+    with:
+      include: |
+        dist/
+        configs/
+      sbom: auto
+      sign: 'true'                # 不给 cosign-key 就走 keyless
+      identity: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/heads/main
+      issuer: https://token.actions.githubusercontent.com
+      anchor-file: _evidence/anchor.txt
+      expect-repo: ${{ github.repository }}
+```
+
+它做的事，按顺序：
+
+1. 检查 `python3 >= 3.10`（不往你的环境里装包，只借 `PYTHONPATH`）
+2. `sign: true` 时装 cosign
+3. `pack` → 包与 `.sigstore.json`
+4. `anchor-file` 有值时把 sha256 追加登记（包外台账）
+5. `verify: true`（默认）自检：有签名验签名，没签名则以 `expect-sha256` 为锚点
+6. `upload-artifact: true`（默认）把包、签名、台账一起上传
+
+### Action 的参数
+
+| 输入 | 默认 | 说明 |
+|---|---|---|
+| `include` | 必填 | 一行一个，支持 `#` 注释 |
+| `exclude` | 空 | 额外排除的目录名 |
+| `sbom` | `auto` | `auto` / `none` / `python` / `node` |
+| `out-dir` | `_evidence` | 输出目录，会自动排除在收集范围外 |
+| `bundle-name` | `evidence-<短sha>.tar.gz` | 包名 |
+| `sign` | `false` | 是否签名 |
+| `cosign-key` | 空 | 给了走 key 模式；口令请用 `COSIGN_PASSWORD` 环境变量 |
+| `identity` / `issuer` | issuer 默认 GitHub OIDC | 期望签发身份，写进包内 `binding.json` |
+| `verify` | `true` | 打完包立刻自检 |
+| `expect-sha256` | 空（用本次产物的 sha） | 包外锚点 |
+| `expect-repo` | 空 | 包外锚点 |
+| `anchor-file` | 空 | 追加登记 sha256 的文件 |
+| `upload-artifact` | `true` | 是否上传 artifact |
+| `retention-days` | `30` | artifact 保留天数 |
+| `fail-on-invalid` | `true` | 自检结论为 2/3 时是否让步骤失败 |
+
+`fail-on-invalid: false` 适合「先取证、后发版」：判定照样写进 outputs 与
+job summary（含 0/1/2/3 的含义），但不会把后续步骤掐断。
+
+### 只校验、不打包
+
+`action.yml` 是「打包 + 可选自检」的复合体。只想验一个已有包时，直接用仓库里的脚本：
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    repository: XMZZUZHI/Github/ci-evidence-pack
+    path: .evidence-pack
+
+- shell: bash
+  env:
+    ACTION_PATH: ${{ github.workspace }}/.evidence-pack
+    INPUT_BUNDLE: _evidence/bundle.tar.gz
+    INPUT_EXPECT_SHA256: ${{ inputs.bundle-sha256 }}
+  run: bash "$ACTION_PATH/scripts/action-verify.sh"
+```
+
+它同样走 `verify --exit-code`：结论在 JSON 与 `GITHUB_STEP_SUMMARY` 里，
+进程退出码保留 0/1/2/3 的语义。
+
+### 手写步骤（不用 Action）
+
+```yaml
 steps:
   - uses: actions/checkout@v4
   - run: pip install evidence-pack
@@ -36,6 +108,19 @@ steps:
 
 本仓库跑在 CNB 上，`.cnb.yml` 里同理：`pack` 之后把 sha256 写进制品或评论，
 签名用 `cosign sign-blob --bundle`。
+
+```yaml
+main:
+  push:
+    - stages:
+        - name: pack
+          script: |
+            pip install -e .
+            evidence-pack pack --repo . --include dist --sbom auto --json | tee pack.json
+            sha=$(python3 -c "import json;print(json.load(open('pack.json'))['bundle_sha256'])")
+            evidence-pack verify "$(python3 -c "import json;print(json.load(open('pack.json'))['bundle_path'])")" \
+              --expect-sha256 "$sha" --exit-code --json
+```
 
 ## 退出码怎么用
 

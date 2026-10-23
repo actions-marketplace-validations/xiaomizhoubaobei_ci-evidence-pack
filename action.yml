@@ -36,14 +36,22 @@ inputs:
   sign:
     description: |
       是否用 cosign 签名。true 时：给了 cosign-key 走 key 模式，否则走 keyless
-      （keyless 需要 job 里的 permissions.id-token: write）
+      （keyless 需要 job 里的 permissions.id-token: write，且只在 GitHub
+      托管的 runner 上有 OIDC token；自托管 / 本地跑请用 key 模式）
     required: false
     default: 'false'
 
   cosign-key:
     description: |
-      cosign 私钥路径（key 模式）。口令请通过 COSIGN_PASSWORD 环境变量注入，
-      不要写在这个输入里 —— 输入会被流水线日志记住
+      cosign **私钥**路径，仅用于签名（key 模式）。口令请通过 COSIGN_PASSWORD
+      环境变量注入，不要写在这个输入里 —— 输入会被流水线日志记住
+    required: false
+    default: ''
+
+  cosign-public-key:
+    description: |
+      cosign **公钥**路径，仅用于验签。签名用私钥、验签用公钥，两者不能互换：
+      填错时 cosign 会直接拒绝，不会「凑合着验」
     required: false
     default: ''
 
@@ -68,7 +76,10 @@ inputs:
     default: 'true'
 
   expect-sha256:
-    description: '包外锚点：期望的 bundle sha256。留空则用本步骤刚打出的包自身摘要'
+    description: |
+      包外锚点：期望的 bundle sha256。留空则用本步骤刚打出的包自身摘要 ——
+      那是「自己给自己发证」，只够证明产物没在步骤之间被动过；
+      真正的包外锚点请从你登记它的地方（制品库 / 审计库）回送
     required: false
     default: ''
 
@@ -85,12 +96,12 @@ inputs:
     default: ''
 
   upload-artifact:
-    description: '是否把证据包与签名 bunde 作为 Actions artifact 上传'
+    description: '是否把证据包、签名 bundle、锚点台账作为 Actions artifact 上传'
     required: false
     default: 'true'
 
   artifact-name:
-    description: '上传 artifact 的名字，默认与 bundle-name 同名（去掉扩展名）'
+    description: '上传 artifact 的名字，留空时用包的 sha256 前 16 位（跨 job 唯一、不含非法字符）'
     required: false
     default: ''
 
@@ -122,15 +133,36 @@ outputs:
   signed:
     description: "'true' 表示已产出签名 bundle"
     value: ${{ steps.pack.outputs.signed }}
+  signature-mode:
+    description: 'key / keyless；未签名时为空'
+    value: ${{ steps.pack.outputs.signature-mode }}
   file-count:
     description: '包内文件数（不含 manifest 自身）'
     value: ${{ steps.pack.outputs.file-count }}
+  source-date-epoch:
+    description: '打包用的确定性时间戳（证据包「何时产生」的唯一答案）'
+    value: ${{ steps.pack.outputs.source-date-epoch }}
+  artifact-name:
+    description: '实际上传的 artifact 名（未上传时为空）'
+    value: ${{ steps.pack.outputs.artifact-name }}
+  anchor-file:
+    description: '锚点台账的绝对路径（未登记时为空）'
+    value: ${{ steps.anchor.outputs.anchor-file }}
   verify-ok:
     description: '自检结论（未开启 verify 时为空）'
     value: ${{ steps.verify.outputs.ok }}
   verify-exit-code:
     description: '自检退出码：0 通过 / 1 用法 / 2 证据无效 / 3 工具异常'
     value: ${{ steps.verify.outputs.exit-code }}
+  verify-error:
+    description: '自检失败原因（通过时为空）'
+    value: ${{ steps.verify.outputs.error }}
+  signature-verified:
+    description: "'true' 表示签名真的验过（不只是「有签名」）"
+    value: ${{ steps.verify.outputs.signature-verified }}
+  anchored:
+    description: "'true' 表示包外锚点核对过"
+    value: ${{ steps.verify.outputs.anchored }}
 
 runs:
   using: 'composite'
@@ -165,6 +197,7 @@ runs:
         INPUT_BUNDLE_NAME: ${{ inputs.bundle-name }}
         INPUT_SIGN: ${{ inputs.sign }}
         INPUT_COSIGN_KEY: ${{ inputs.cosign-key }}
+        INPUT_ARTIFACT_NAME: ${{ inputs.artifact-name }}
         INPUT_IDENTITY: ${{ inputs.identity }}
         INPUT_ISSUER: ${{ inputs.issuer }}
       run: bash "${{ github.action_path }}/scripts/action-pack.sh"
@@ -174,6 +207,7 @@ runs:
       if: inputs.anchor-file != ''
       shell: bash
       env:
+        ACTION_PATH: ${{ github.action_path }}
         INPUT_BUNDLE: ${{ steps.pack.outputs.bundle-path }}
         INPUT_ANCHOR_FILE: ${{ inputs.anchor-file }}
       run: bash "${{ github.action_path }}/scripts/action-anchor.sh"
@@ -181,11 +215,14 @@ runs:
     - name: 校验证据包
       id: verify
       if: inputs.verify == 'true'
+      continue-on-error: true
       shell: bash
       env:
         ACTION_PATH: ${{ github.action_path }}
         INPUT_BUNDLE: ${{ steps.pack.outputs.bundle-path }}
+        # 未签名时这个值为空字符串，脚本据此跳过签名校验（而不是拿空路径去调 cosign）。
         INPUT_SIGNATURE_BUNDLE: ${{ steps.pack.outputs.signature-bundle }}
+        INPUT_COSIGN_PUBLIC_KEY: ${{ inputs.cosign-public-key }}
         INPUT_IDENTITY: ${{ inputs.identity }}
         INPUT_ISSUER: ${{ inputs.issuer }}
         INPUT_EXPECT_SHA256: ${{ inputs.expect-sha256 || steps.pack.outputs.bundle-sha256 }}
@@ -195,20 +232,30 @@ runs:
         bash "${{ github.action_path }}/scripts/action-verify.sh"
         code=$?
         set -e
-        if [ "$code" -ne 0 ] && [ "${{ inputs.fail-on-invalid }}" != "true" ]; then
+        if [ "$code" -eq 0 ]; then
+          exit 0
+        fi
+        if [ "${{ inputs.fail-on-invalid }}" != "true" ]; then
           echo "::warning::evidence-pack 判定未通过（退出码 $code），按 fail-on-invalid=false 继续"
           exit 0
         fi
+        # 步骤本身标了 continue-on-error，所以这里必须自己把结论落成失败状态：
+        # 否则 fail-on-invalid=true 只是句口号，流水线照样绿。
+        echo "::error::evidence-pack 自检失败（退出码 $code）：详情见上一步的 summary"
         exit "$code"
 
     - name: 上传证据包
       if: inputs.upload-artifact == 'true'
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ inputs.artifact-name || format('{0}-evidence', steps.pack.outputs.bundle-name) }}
+        # 用脚本算好的 artifact-name：已经做过字符规范化与长度截断，
+        # 直接拿 bundle-name 会踩 artifact 名的 `" : < > | * ? \ /` 禁用字符。
+        name: ${{ steps.pack.outputs.artifact-name }}
+        # 逐行给真实文件：未签名 / 未登记锚点时对应那行是空串，
+        # 所以这里配 if-no-files-found: warn 而不是 error —— 缺件只提醒不拦流程。
         path: |
           ${{ steps.pack.outputs.bundle-path }}
           ${{ steps.pack.outputs.signature-bundle }}
-          ${{ inputs.anchor-file }}
-        if-no-files-found: error
+          ${{ steps.anchor.outputs.anchor-file }}
+        if-no-files-found: warn
         retention-days: ${{ inputs.retention-days }}

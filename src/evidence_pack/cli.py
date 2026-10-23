@@ -39,9 +39,15 @@ def _emit(payload: dict, *, quiet_line: str | None, quiet: bool, as_json: bool) 
 
 
 def _fail(exc: EvidenceError, *, as_json: bool) -> None:
+    """失败也要给一份和成功同构的 JSON：调用方不该为了读结论写两套解析。"""
     if as_json:
-        typer.echo(json.dumps({"ok": False, "error": str(exc), "kind": exc.kind},
-                              indent=2, sort_keys=True, ensure_ascii=False))
+        typer.echo(json.dumps({
+            "ok": False,
+            "exit_code": exc.exit_code,
+            "error": str(exc),
+            "kind": exc.kind,
+            "error_kind": exc.kind,
+        }, indent=2, sort_keys=True, ensure_ascii=False))
     else:
         typer.echo(f"error: {exc}", err=True)
     raise typer.Exit(code=exc.exit_code)
@@ -56,7 +62,10 @@ def pack(
     collect_git: bool = typer.Option(True, "--collect-git/--no-collect-git"),
     exclude: list[str] = typer.Option(None, "--exclude", help="额外排除的路径名"),
     key: str = typer.Option(None, "--key", help="cosign 私钥路径（key 模式）"),
-    sign: bool = typer.Option(False, "--sign", help="用 cosign keyless 签名（需 OIDC token / id-token: write）"),
+    sign: bool = typer.Option(
+        False, "--sign",
+        help="要求签名：给了 --key 走 key 模式，否则走 keyless（需 OIDC token / id-token: write）",
+    ),
     identity: str = typer.Option(None, "--identity", help="期望签发身份，写进 metadata/binding.json 供验签方核对"),
     issuer: str = typer.Option(None, "--issuer", help="期望 OIDC issuer，同上"),
     bundle_name: str = typer.Option(None, "--bundle-name", help="自定义包名"),
@@ -80,6 +89,7 @@ def pack(
         ))
         _emit({
             "ok": True,
+            "exit_code": EXIT_OK,
             "bundle_path": result.bundle_path,
             "bundle_name": Path(result.bundle_path).name,
             "bundle_sha256": result.bundle_sha256,
@@ -98,7 +108,10 @@ def pack(
 def verify(
     bundle: Path = typer.Argument(..., help="证据包 .tar.gz"),
     signature_bundle: Path = typer.Option(None, "--signature-bundle", help=".sigstore.json"),
-    key: str = typer.Option(None, "--key", help="cosign 公钥（key 模式验签）"),
+    verify_key: str = typer.Option(
+        None, "--verify-key",
+        help="cosign **公钥**（key 模式验签）。签名用私钥、验签用公钥，别混",
+    ),
     identity: str = typer.Option(None, "--identity", help="keyless 期望身份"),
     issuer: str = typer.Option(None, "--issuer", help="keyless 期望 OIDC issuer"),
     ignore_tlog: bool = typer.Option(False, "--insecure-ignore-tlog", help="跳过透明日志校验（结果会标记 tlog_checked=false）"),
@@ -114,7 +127,7 @@ def verify(
     """校验证据包。退出码：0 通过 / 1 用法 / 2 证据无效 / 3 工具异常。"""
     if exit_code:
         _verify_reporting(
-            bundle, signature_bundle, key, identity, issuer, ignore_tlog,
+            bundle, signature_bundle, verify_key, identity, issuer, ignore_tlog,
             expect_sha256, expect_repo, quiet, as_json,
         )
         return
@@ -122,7 +135,7 @@ def verify(
         result = run_verify(VerifyOptions(
             bundle_path=bundle,
             signature_bundle=signature_bundle,
-            key=key,
+            verify_key=verify_key,
             identity=identity,
             issuer=issuer,
             ignore_tlog=ignore_tlog,
@@ -131,6 +144,7 @@ def verify(
         ))
         _emit({
             "ok": True,
+            "exit_code": EXIT_OK,
             "bundle_path": result.bundle_path,
             "bundle_sha256": result.bundle_sha256,
             "manifest_verified": result.manifest_verified,
@@ -149,7 +163,7 @@ def verify(
 def _verify_reporting(
     bundle: Path,
     signature_bundle: Path | None,
-    key: str | None,
+    verify_key: str | None,
     identity: str | None,
     issuer: str | None,
     ignore_tlog: bool,
@@ -166,7 +180,7 @@ def _verify_reporting(
     result = run_verify(VerifyOptions(
         bundle_path=bundle,
         signature_bundle=signature_bundle,
-        key=key,
+        verify_key=verify_key,
         identity=identity,
         issuer=issuer,
         ignore_tlog=ignore_tlog,

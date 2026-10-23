@@ -20,6 +20,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 这个脚本住在 evidence-pack 仓库里，不是调用方 workspace 里的文件。
+      # 想省事就直接用 Action 本体（verify 输入默认为 true），它自己会找对路径。
+      - name: 取回 evidence-pack 的校验脚本
+        uses: actions/checkout@v4
+        with:
+          repository: XMZZUZHI/Github/ci-evidence-pack
+          ref: main
+          path: .evidence-pack
+
       - name: 取回证据包
         run: |
           # 换成你自己的取包步骤：gh run download / aws s3 cp / curl ...
@@ -30,7 +39,7 @@ jobs:
       - name: 校验证据包
         shell: bash
         env:
-          ACTION_PATH: ${{ github.workspace }}
-          INPUT_BUNDLE: _evidence/evidence.tar.gz
+          ACTION_PATH: ${{ github.workspace }}/.evidence-pack
+          INPUT_BUNDLE: ${{ github.workspace }}/_evidence/evidence.tar.gz
           INPUT_EXPECT_SHA256: ${{ inputs.bundle-sha256 }}
         run: bash "$ACTION_PATH/scripts/action-verify.sh"

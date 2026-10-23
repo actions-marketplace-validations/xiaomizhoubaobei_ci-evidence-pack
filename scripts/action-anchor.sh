@@ -17,12 +17,21 @@ else
   DIGEST=$(shasum -a 256 "$BUNDLE" | awk '{print $1}')
 fi
 
-DIR=$(dirname "$INPUT_ANCHOR_FILE")
-mkdir -p "$DIR"
+# 相对路径按调用方 cwd 解析并落成绝对路径：下游 job / 手工调用常常只给相对路径，
+# 而 action.yml 的 outputs 要求路径能跨步骤直接用。
+ANCHOR_DIR="$(dirname "${INPUT_ANCHOR_FILE}")"
+ANCHOR_NAME="$(basename "${INPUT_ANCHOR_FILE}")"
+mkdir -p "$ANCHOR_DIR"
+ANCHOR_FILE="$(cd "$ANCHOR_DIR" && pwd)/$ANCHOR_NAME"
 
 # 追加写：同一份 anchor 文件可以跨 step / 跨 job 累积成一册台账。
-printf '%s  %s\n' "$DIGEST" "$(basename "$BUNDLE")" >> "$INPUT_ANCHOR_FILE"
+printf '%s  %s\n' "$DIGEST" "$(basename "$BUNDLE")" >> "$ANCHOR_FILE"
 
-echo "sha256=$DIGEST" >> "${GITHUB_OUTPUT:-/dev/null}"
-echo "anchor-file=$INPUT_ANCHOR_FILE" >> "${GITHUB_OUTPUT:-/dev/null}"
-echo "::notice::锚点已登记：$DIGEST -> $INPUT_ANCHOR_FILE（包外，别只信包里的 manifest）"
+# 供 action.yml 的 outputs 用：anchor-file 在 action.yml 里被映射成
+# `steps.pack.outputs.anchor-file`，所以这里也往 GITHUB_OUTPUT 末尾补一条。
+{
+  echo "sha256=$DIGEST"
+  echo "anchor-file=$ANCHOR_FILE"
+} >> "${GITHUB_OUTPUT:-/dev/null}"
+
+echo "::notice::锚点已登记：$DIGEST -> $ANCHOR_FILE（包外，别只信包里的 manifest）"

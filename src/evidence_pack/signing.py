@@ -9,6 +9,9 @@ cosign v3 把 `--output-signature` / `--output-certificate` 这套两文件
 不做 keyless/key 双分支——那正是原实现 `--certificate` 无条件加、
 导致 key 模式必炸的根源。
 
+「持钥」那一边，签名与验签用的是**不同的钥匙**：sign 收私钥，verify 收公钥。
+所以两个入口各有一个 `--verify-key`，别拿签名的参数去验签。
+
 另有一条铁律：**签名校验不能只信退出码**。原实现 `cosign` 返回 0 就
 算 `signature_verified: true`，于是一个 `exit 0` 的假 cosign 就能骗过它。
 这里除了退出码，还要独立核对三件事：
@@ -153,7 +156,7 @@ def verify(
     blob: Path,
     bundle: Path,
     *,
-    key: str | None = None,
+    verify_key: str | None = None,
     identity: str | None = None,
     issuer: str | None = None,
     ignore_tlog: bool = False,
@@ -162,16 +165,17 @@ def verify(
 ) -> SignatureResult:
     """验签。返回结构化的结果，失败按语义抛 EvidenceInvalid 或 ToolFailure。
 
+    `verify_key` 是 cosign **公钥**（不是签名用的私钥）。
     `binding` 是包内 metadata/binding.json 声明的期望身份。它只在调用方
     没给 identity/issuer 时用来填空：声明值来自包内，本身不构成信任根，
-    真正的信任仍取决于 cosign 对证书链与 tlog 的校验。没填也没声明时，
+    真正的信任仍取决于 cosign 对公钥 / 证书链 / tlog 的校验。没填也没声明时，
     keyless 必须报用法错 —— 那是「接受任何人的签名」，不是验证。
     """
     cosign = _require_cosign()
-    if not key and not identity and binding:
+    if not verify_key and not identity and binding:
         identity = binding.get("identity") or None
         issuer = binding.get("issuer") or None
-    mode = _resolve_mode(key, identity, issuer)
+    mode = _resolve_mode(verify_key, identity, issuer)
 
     data = _check_bundle_structure(bundle)
 
@@ -186,7 +190,7 @@ def verify(
 
     cmd = [cosign, "verify-blob", "--bundle", str(bundle)]
     if mode == "key":
-        cmd += ["--key", key or ""]
+        cmd += ["--key", verify_key or ""]
         if ignore_tlog:
             cmd.append("--insecure-ignore-tlog=true")
     else:
@@ -219,7 +223,9 @@ def verify(
     return SignatureResult(
         verified=True,
         mode=mode,
-        tlog_checked=tlog_present and not ignore_tlog,
+        # 老实回答「这一条到底查了没有」：key 模式的 bundle 本就不带 tlog，
+        # 却曾在这里报 true —— 那种绿灯是给自己看的，不是给审计看的。
+        tlog_checked=bool(tlog_present and not ignore_tlog),
         bundle_path=str(bundle),
         detail="",
     )

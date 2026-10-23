@@ -53,9 +53,10 @@ steps:
 | `exclude` | 空 | 额外排除的目录名 |
 | `sbom` | `auto` | `auto` / `none` / `python` / `node` |
 | `out-dir` | `_evidence` | 输出目录，会自动排除在收集范围外 |
-| `bundle-name` | `evidence-<短sha>.tar.gz` | 包名 |
+| `bundle-name` | `evidence-<短sha>.tar.gz` | 包名（保存时会去掉开头的点） |
 | `sign` | `false` | 是否签名 |
-| `cosign-key` | 空 | 给了走 key 模式；口令请用 `COSIGN_PASSWORD` 环境变量 |
+| `cosign-key` | 空 | cosign **私钥**，仅用于签名；口令用 `COSIGN_PASSWORD` 环境变量 |
+| `cosign-public-key` | 空 | cosign **公钥**，仅用于验签。签名用私钥、验签用公钥，不能互换 |
 | `identity` / `issuer` | issuer 默认 GitHub OIDC | 期望签发身份，写进包内 `binding.json` |
 | `verify` | `true` | 打完包立刻自检 |
 | `expect-sha256` | 空（用本次产物的 sha） | 包外锚点 |
@@ -63,14 +64,20 @@ steps:
 | `anchor-file` | 空 | 追加登记 sha256 的文件 |
 | `upload-artifact` | `true` | 是否上传 artifact |
 | `retention-days` | `30` | artifact 保留天数 |
+| `artifact-name` | 空（用包 sha256 前 16 位） | artifact 名；默认值跨 job 唯一，也天然不含 `/ : @` 这类非法字符 |
 | `fail-on-invalid` | `true` | 自检结论为 2/3 时是否让步骤失败 |
 
 `fail-on-invalid: false` 适合「先取证、后发版」：判定照样写进 outputs 与
 job summary（含 0/1/2/3 的含义），但不会把后续步骤掐断。
 
+`expect-sha256` 留空时用的是本次刚打出来的包的 sha —— 那只是「自己给自己发证」，
+能证明产物在步骤之间没被动过，**不等于**包外锚点。真正的锚点要从你登记它的
+地方（制品库 / 审计库）回送。
+
 ### 只校验、不打包
 
-`action.yml` 是「打包 + 可选自检」的复合体。只想验一个已有包时，直接用仓库里的脚本：
+`action.yml` 是「打包 + 可选自检」的复合体。只想验一个已有包时，直接用仓库里的脚本 ——
+注意 `ACTION_PATH` 必须指向 **evidence-pack 仓库的检出位置**，不能填自己的 workspace：
 
 ```yaml
 - uses: actions/checkout@v4

@@ -43,8 +43,14 @@ def test_sign_emits_only_sigstore_bundle(tmp_path, signed):
 
 def test_verify_good(signed):
     blob, bundle, pub = signed
-    result = verify(blob, bundle, key=pub, password=PASSWORD)
+    result = verify(blob, bundle, verify_key=pub, password=PASSWORD)
     assert result.verified and result.mode == "key"
+    # cosign v3 的 key 模式 bundle 默认也带 tlog，这里不预设有没有；
+    # 只要求「报的和你查的一致」—— 没查过的不许报 true。
+    bundle_data = json.loads(bundle.read_text())
+    assert result.tlog_checked is bool(
+        (bundle_data.get("verificationMaterial") or {}).get("tlogEntries")
+    )
 
 
 def test_verify_tampered_blob_is_evidence_invalid(signed, tmp_path):
@@ -52,7 +58,7 @@ def test_verify_tampered_blob_is_evidence_invalid(signed, tmp_path):
     tampered = tmp_path / "tampered.bin"
     tampered.write_bytes(b"evidence+evil")
     with pytest.raises(EvidenceInvalid):
-        verify(tampered, bundle, key=pub, password=PASSWORD)
+        verify(tampered, bundle, verify_key=pub, password=PASSWORD)
 
 
 def test_keyless_without_identity_is_rejected_locally(signed, monkeypatch):
@@ -73,7 +79,7 @@ def test_keyless_without_identity_is_rejected_locally(signed, monkeypatch):
 def test_key_and_identity_are_mutually_exclusive(signed):
     blob, bundle, pub = signed
     with pytest.raises(UsageError, match="互相排斥"):
-        verify(blob, bundle, key=pub, identity="a", issuer="b")
+        verify(blob, bundle, verify_key=pub, identity="a", issuer="b")
 
 
 def test_fake_cosign_exit_zero_but_no_output_is_tool_failure(signed, tmp_path, monkeypatch):
@@ -85,7 +91,7 @@ def test_fake_cosign_exit_zero_but_no_output_is_tool_failure(signed, tmp_path, m
     script.chmod(script.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", f"{fake}:{os.environ['PATH']}")
     with pytest.raises(ToolFailure, match="Verified OK"):
-        verify(blob, bundle, key=pub)
+        verify(blob, bundle, verify_key=pub)
 
 
 def test_fake_cosign_cannot_vouch_for_tampered_blob(signed, tmp_path, monkeypatch):
@@ -99,7 +105,7 @@ def test_fake_cosign_cannot_vouch_for_tampered_blob(signed, tmp_path, monkeypatc
     script.chmod(script.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", f"{fake}:{os.environ['PATH']}")
     with pytest.raises(EvidenceInvalid, match="摘要"):
-        verify(tampered, bundle, key=pub, password=PASSWORD)
+        verify(tampered, bundle, verify_key=pub, password=PASSWORD)
 
 
 def test_bundle_digest_must_bind_the_blob(tmp_path, signed):
@@ -113,7 +119,7 @@ def test_bundle_digest_must_bind_the_blob(tmp_path, signed):
     blob = tmp_path / "blob.bin"
     blob.write_bytes(b"evidence")
     with pytest.raises(EvidenceInvalid):
-        verify(blob, forged, key=pub, password=PASSWORD)
+        verify(blob, forged, verify_key=pub, password=PASSWORD)
 
 
 def test_garbage_bundle_is_tool_failure(tmp_path, signed):
@@ -121,4 +127,12 @@ def test_garbage_bundle_is_tool_failure(tmp_path, signed):
     junk = tmp_path / "junk.sigstore.json"
     junk.write_text("{not json")
     with pytest.raises(ToolFailure):
-        verify(blob, junk, key=pub, password=PASSWORD)
+        verify(blob, junk, verify_key=pub, password=PASSWORD)
+
+
+def test_passing_the_private_key_as_verify_key_fails(signed):
+    """签名用私钥、验签用公钥。把私钥塞进 verify_key 不该「也能凑合验过」。"""
+    blob, bundle, _pub = signed
+    private_key = str(bundle.parent / "k.key")
+    with pytest.raises((EvidenceInvalid, ToolFailure)):
+        verify(blob, bundle, verify_key=private_key, password=PASSWORD)

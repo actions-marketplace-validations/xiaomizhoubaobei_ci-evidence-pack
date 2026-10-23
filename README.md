@@ -53,8 +53,10 @@ steps:
 | `bundle-path` / `bundle-name` | 证据包位置 |
 | `bundle-sha256` | 包外锚点就是它 |
 | `signature-bundle` | `.sigstore.json`，未签名为空 |
+| `signature-mode` | `key` / `keyless`，未签名为空 |
 | `signed` | 是否产出了签名 |
-| `verify-ok` / `verify-exit-code` | 自检结论与 0/1/2/3 |
+| `verify-ok` / `verify-exit-code` / `verify-error` | 自检结论、0/1/2/3 与失败原因 |
+| `signature-verified` / `anchored` | 签名真的验过没有、包外锚点核对过没有 |
 
 Action 是 composite 的，不往调用方的解释器里 `pip install`，只把本仓库的
 `src` 塞进 `PYTHONPATH`；cosign 只在 `sign: true` 时才装。
@@ -89,7 +91,12 @@ evidence-pack pack --repo . --include dist
 # 验包：带外部锚点
 evidence-pack verify bundle.tar.gz --expect-sha256 <hex>
 
-# 验包：带签名
+# 验包：key 模式（签名用私钥，验签用公钥）
+evidence-pack verify bundle.tar.gz \
+  --signature-bundle bundle.tar.gz.sigstore.json \
+  --verify-key cosign.pub
+
+# 验包：keyless，身份必须写死到具体 workflow 文件
 evidence-pack verify bundle.tar.gz \
   --signature-bundle bundle.tar.gz.sigstore.json \
   --identity "https://github.com/org/repo/.github/workflows/ci.yml@refs/heads/main" \

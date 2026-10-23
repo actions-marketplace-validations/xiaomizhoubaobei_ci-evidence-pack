@@ -60,6 +60,9 @@ class VerifyResult:
     repo: str | None = None
     source_date_epoch: int | None = None
     signature: SignatureResult = field(default_factory=SignatureResult)
+    # 锚点没能真正核对时留话（不是失败，是「这条锚点没起作用」），
+    # 好让人知道 anchored=true 到底靠的是什么。
+    anchor_warnings: list[str] = field(default_factory=list)
 
 
 def safe_extract(bundle_path: Path, dest: Path) -> None:
@@ -151,19 +154,33 @@ def _anchor(result: VerifyResult, opts: VerifyOptions, root: Path) -> None:
         # 优先用 git remote：那是仓库自己的身份。
         # run.json 里的 repository 字段来自 runner 环境变量，任何人 export 一下就能改，
         # 只能作为"两者是否一致"的佐证，不能独自充当锚点。
-        git_json = root / "metadata" / "git.json"
-        recorded = None
-        if git_json.is_file():
-            try:
-                recorded = json.loads(git_json.read_text(encoding="utf-8")).get("remote_url") or None
-            except json.JSONDecodeError:
-                recorded = None
+        recorded = _recorded_remote(root)
         if not recorded:
-            raise EvidenceInvalid(f"锚点无法核对：包内没有 git remote 信息，但要求是 {want_repo}")
-        normalized = recorded.rstrip("/").removesuffix(".git")
-        if not (normalized == want_repo or normalized.endswith("/" + want_repo)):
-            raise EvidenceInvalid(f"锚点不符：期望仓库 {want_repo}，包内记录 {recorded}")
-        result.anchored = True
+            # 「包内没有 remote 元数据」是采集环境的问题，不是篡改的证据：
+            # actions/checkout 的检出默认带着空的 remote，本地打包、剥离 .git
+            # 的构建上下文同理。把它判成 2，等于让所有没配 remote 的仓库
+            # 第一次跑就红 —— 那是把工具的限制冒充成对方的罪名。
+            # 所以只报告这条锚点未生效，让它退化成「未锚定」，由上层决定收不收。
+            result.anchor_warnings.append(
+                f"--expect-repo 未生效：包内没有 git remote 信息，无法核对 "
+                f"{want_repo}（这不等于证据无效，但这条锚点没起作用）"
+            )
+        else:
+            normalized = recorded.rstrip("/").removesuffix(".git")
+            if not (normalized == want_repo or normalized.endswith("/" + want_repo)):
+                raise EvidenceInvalid(f"锚点不符：期望仓库 {want_repo}，包内记录 {recorded}")
+            result.anchored = True
+
+
+def _recorded_remote(root: Path) -> str | None:
+    """读包内记下的 git remote 地址；没有或读不动都返回 None。"""
+    git_json = root / "metadata" / "git.json"
+    if not git_json.is_file():
+        return None
+    try:
+        return json.loads(git_json.read_text(encoding="utf-8")).get("remote_url") or None
+    except json.JSONDecodeError:
+        return None
 
 
 def read_binding(root: Path) -> dict | None:

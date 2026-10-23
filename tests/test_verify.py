@@ -107,3 +107,69 @@ def test_malicious_tar_is_rejected(tmp_path, kind):
 def test_missing_bundle_is_usage_error(tmp_path):
     with pytest.raises(UsageError, match="不存在"):
         verify(VerifyOptions(bundle_path=tmp_path / "nope.tar.gz"))
+
+
+def _packed_with_remote(tmp_path: Path, monkeypatch, remote: str) -> Path:
+    """打一个有 git 元数据的包，remote 地址由参数决定。"""
+    import subprocess
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "a.txt").write_text("original")
+    for args in (
+        ["init", "-q"],
+        ["config", "user.email", "t@example.com"],
+        ["config", "user.name", "t"],
+        ["add", "-A"],
+        ["commit", "-qm", "init"],
+        ["remote", "add", "origin", remote],
+    ):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+    result = pack(PackOptions(
+        repo_root=repo, out_dir=tmp_path / "out", includes=["src"], sbom="none"
+    ))
+    return Path(result.bundle_path)
+
+
+def test_expect_repo_matches_recorded_remote(tmp_path, monkeypatch):
+    bundle = _packed_with_remote(tmp_path, monkeypatch, "https://github.com/acme/app.git")
+    sha = __import__("hashlib").sha256(bundle.read_bytes()).hexdigest()
+    result = verify(VerifyOptions(
+        bundle_path=bundle, expect_sha256=sha, expect_repo="acme/app"
+    ))
+    assert result.anchored
+    assert result.anchor_warnings == []
+
+
+def test_expect_repo_mismatch_is_invalid(tmp_path, monkeypatch):
+    """包内记的仓库和期望的不一样 —— 这是真的对不上，必须判 2。"""
+    bundle = _packed_with_remote(tmp_path, monkeypatch, "https://github.com/evil/app.git")
+    with pytest.raises(EvidenceInvalid, match="锚点不符"):
+        verify(VerifyOptions(bundle_path=bundle, expect_repo="acme/app"))
+
+
+def test_expect_repo_without_remote_metadata_is_not_tampering(tmp_path, monkeypatch):
+    """包内没有 remote（checkout 的默认形态）不是篡改证据。
+
+    这里曾经判 2：Action 默认把 github.repository 塞进 --expect-repo，
+    而 actions/checkout 检出的工作区 remote 是空的，于是每个没配 remote
+    的仓库第一次跑就红。缺元数据是采集环境的问题，不该记在证据头上。
+    """
+    bundle = _packed(tmp_path, monkeypatch)  # collect_git=False，包里根本没有 git.json
+    sha = __import__("hashlib").sha256(bundle.read_bytes()).hexdigest()
+    result = verify(VerifyOptions(
+        bundle_path=bundle, expect_sha256=sha, expect_repo="acme/app"
+    ))
+    assert result.ok and result.exit_code == 0
+    # sha 锚点照样生效，但 repo 这条锚点没起作用，必须说出来。
+    assert result.anchored
+    assert len(result.anchor_warnings) == 1
+    assert "未生效" in result.anchor_warnings[0]
+
+
+def test_expect_repo_without_anchor_still_requires_trust_root(tmp_path, monkeypatch):
+    """没有 remote 元数据不等于放行：没有包外锚点照样是「不构成证据」。"""
+    bundle = _packed(tmp_path, monkeypatch)
+    with pytest.raises(EvidenceInvalid, match="不构成证据"):
+        verify(VerifyOptions(bundle_path=bundle, expect_repo="acme/app"))

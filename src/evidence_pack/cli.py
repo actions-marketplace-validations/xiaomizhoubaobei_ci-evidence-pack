@@ -155,6 +155,7 @@ def verify(
             "file_count": result.file_count,
             "repo": result.repo,
             "source_date_epoch": result.source_date_epoch,
+            "anchor_warnings": result.anchor_warnings,
         }, quiet_line="OK", quiet=quiet, as_json=as_json)
     except EvidenceError as exc:
         _fail(exc, as_json=as_json)
@@ -203,6 +204,7 @@ def _verify_reporting(
         "file_count": result.file_count,
         "repo": result.repo,
         "source_date_epoch": result.source_date_epoch,
+        "anchor_warnings": result.anchor_warnings,
     }
     if quiet and not as_json:
         typer.echo("OK" if result.ok else f"INVALID({result.exit_code}): {result.error}")

@@ -1,0 +1,214 @@
+name: 'evidence-pack'
+description: '把一次 CI 构建钉成可独立验证的证据包：确定性打包 + 严格 manifest + cosign bundle 签名 + 退出码 0/2/3 分层'
+author: 'XMZZUZHI'
+
+branding:
+  icon: 'package'
+  color: 'purple'
+
+inputs:
+  include:
+    description: |
+      要收进包的文件/目录，相对仓库根，一行一个（支持 # 注释）。
+      例如：dist/ / configs/ / sbom.json
+    required: true
+
+  exclude:
+    description: '额外排除的目录名，一行一个。默认已排除 .git / node_modules / dist / .venv 等'
+    required: false
+    default: ''
+
+  sbom:
+    description: 'auto | none | python | node。auto 认不出项目类型时自动跳过'
+    required: false
+    default: 'auto'
+
+  out-dir:
+    description: '证据包输出目录（会被自动排除在收集范围外）'
+    required: false
+    default: '_evidence'
+
+  bundle-name:
+    description: '证据包文件名，默认 evidence-<短 sha>.tar.gz'
+    required: false
+    default: ''
+
+  sign:
+    description: |
+      是否用 cosign 签名。true 时：给了 cosign-key 走 key 模式，否则走 keyless
+      （keyless 需要 job 里的 permissions.id-token: write）
+    required: false
+    default: 'false'
+
+  cosign-key:
+    description: |
+      cosign 私钥路径（key 模式）。口令请通过 COSIGN_PASSWORD 环境变量注入，
+      不要写在这个输入里 —— 输入会被流水线日志记住
+    required: false
+    default: ''
+
+  identity:
+    description: |
+      keyless 期望签发身份，例如
+      https://github.com/<owner>/<repo>/.github/workflows/<file>.yml@refs/heads/main
+      会被写进包内 metadata/binding.json，并作为验签时的默认期望值
+    required: false
+    default: ''
+
+  issuer:
+    description: 'keyless 期望 OIDC issuer，默认 https://token.actions.githubusercontent.com'
+    required: false
+    default: 'https://token.actions.githubusercontent.com'
+
+  verify:
+    description: |
+      打完包后立刻自检。true 时：有签名则验签名，无签名则要求同时提供 expect-sha256，
+      否则会如实判成「不构成证据」（退出码 2）
+    required: false
+    default: 'true'
+
+  expect-sha256:
+    description: '包外锚点：期望的 bundle sha256。留空则用本步骤刚打出的包自身摘要'
+    required: false
+    default: ''
+
+  expect-repo:
+    description: '包外锚点：期望的 owner/repo'
+    required: false
+    default: ''
+
+  anchor-file:
+    description: |
+      把 bundle 的 sha256 追加登记到这个文件（包外台账）。
+      留空则不登记。它只是「方便你接着上传到审计库」，不是信任根本身
+    required: false
+    default: ''
+
+  upload-artifact:
+    description: '是否把证据包与签名 bunde 作为 Actions artifact 上传'
+    required: false
+    default: 'true'
+
+  artifact-name:
+    description: '上传 artifact 的名字，默认与 bundle-name 同名（去掉扩展名）'
+    required: false
+    default: ''
+
+  retention-days:
+    description: 'artifact 保留天数'
+    required: false
+    default: '30'
+
+  fail-on-invalid:
+    description: |
+      verify 判定为证据无效（2）或工具异常（3）时，是否让这个步骤失败。
+      设为 false 时只在 outputs / summary 里留结论，适合「先取证、后发版」的流程
+    required: false
+    default: 'true'
+
+outputs:
+  bundle-path:
+    description: '证据包的绝对路径'
+    value: ${{ steps.pack.outputs.bundle-path }}
+  bundle-name:
+    description: '证据包文件名'
+    value: ${{ steps.pack.outputs.bundle-name }}
+  bundle-sha256:
+    description: '证据包的 sha256（包外锚点就是它）'
+    value: ${{ steps.pack.outputs.bundle-sha256 }}
+  signature-bundle:
+    description: 'cosign .sigstore.json 路径，未签名时为空'
+    value: ${{ steps.pack.outputs.signature-bundle }}
+  signed:
+    description: "'true' 表示已产出签名 bundle"
+    value: ${{ steps.pack.outputs.signed }}
+  file-count:
+    description: '包内文件数（不含 manifest 自身）'
+    value: ${{ steps.pack.outputs.file-count }}
+  verify-ok:
+    description: '自检结论（未开启 verify 时为空）'
+    value: ${{ steps.verify.outputs.ok }}
+  verify-exit-code:
+    description: '自检退出码：0 通过 / 1 用法 / 2 证据无效 / 3 工具异常'
+    value: ${{ steps.verify.outputs.exit-code }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: 检查 Python 运行时
+      shell: bash
+      run: |
+        set -euo pipefail
+        command -v python3 >/dev/null 2>&1 || {
+          echo "::error::找不到 python3。ubuntu/macos 的 runner 自带；自托管 runner 请先装 Python 3.10+"
+          exit 1
+        }
+        python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' || {
+          echo "::error::evidence-pack 需要 Python 3.10+，当前是 $(python3 -V 2>&1)"
+          exit 1
+        }
+
+    - name: 安装 cosign
+      if: inputs.sign == 'true'
+      uses: sigstore/cosign-installer@v3
+
+    - name: 打出证据包
+      id: pack
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        REPO_ROOT: ${{ github.workspace }}
+        INPUT_INCLUDE: ${{ inputs.include }}
+        INPUT_EXCLUDE: ${{ inputs.exclude }}
+        INPUT_SBOM: ${{ inputs.sbom }}
+        INPUT_OUT_DIR: ${{ inputs.out-dir }}
+        INPUT_BUNDLE_NAME: ${{ inputs.bundle-name }}
+        INPUT_SIGN: ${{ inputs.sign }}
+        INPUT_COSIGN_KEY: ${{ inputs.cosign-key }}
+        INPUT_IDENTITY: ${{ inputs.identity }}
+        INPUT_ISSUER: ${{ inputs.issuer }}
+      run: bash "${{ github.action_path }}/scripts/action-pack.sh"
+
+    - name: 登记包外锚点
+      id: anchor
+      if: inputs.anchor-file != ''
+      shell: bash
+      env:
+        INPUT_BUNDLE: ${{ steps.pack.outputs.bundle-path }}
+        INPUT_ANCHOR_FILE: ${{ inputs.anchor-file }}
+      run: bash "${{ github.action_path }}/scripts/action-anchor.sh"
+
+    - name: 校验证据包
+      id: verify
+      if: inputs.verify == 'true'
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        INPUT_BUNDLE: ${{ steps.pack.outputs.bundle-path }}
+        INPUT_SIGNATURE_BUNDLE: ${{ steps.pack.outputs.signature-bundle }}
+        INPUT_IDENTITY: ${{ inputs.identity }}
+        INPUT_ISSUER: ${{ inputs.issuer }}
+        INPUT_EXPECT_SHA256: ${{ inputs.expect-sha256 || steps.pack.outputs.bundle-sha256 }}
+        INPUT_EXPECT_REPO: ${{ inputs.expect-repo || github.repository }}
+      run: |
+        set +e
+        bash "${{ github.action_path }}/scripts/action-verify.sh"
+        code=$?
+        set -e
+        if [ "$code" -ne 0 ] && [ "${{ inputs.fail-on-invalid }}" != "true" ]; then
+          echo "::warning::evidence-pack 判定未通过（退出码 $code），按 fail-on-invalid=false 继续"
+          exit 0
+        fi
+        exit "$code"
+
+    - name: 上传证据包
+      if: inputs.upload-artifact == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name || format('{0}-evidence', steps.pack.outputs.bundle-name) }}
+        path: |
+          ${{ steps.pack.outputs.bundle-path }}
+          ${{ steps.pack.outputs.signature-bundle }}
+          ${{ inputs.anchor-file }}
+        if-no-files-found: error
+        retention-days: ${{ inputs.retention-days }}

@@ -1,0 +1,32 @@
+# keyless 签名：信任根来自 OIDC 身份，而不是任何一把长期密钥。
+# identity 必须写死到具体的 workflow 文件，别用正则宽匹配 —— 宽匹配等于谁都能签。
+name: evidence pack (keyless)
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write   # cosign keyless 必需
+
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: |
+          mkdir -p dist
+          echo 'build artifact' > dist/app.bin
+
+      - name: 生成并签名证据包
+        id: evidence
+        uses: XMZZUZHI/Github/ci-evidence-pack@main
+        with:
+          include: dist/
+          sbom: none
+          sign: 'true'
+          identity: https://github.com/${{ github.repository }}/.github/workflows/keyless-sign.yml@refs/heads/main
+          issuer: https://token.actions.githubusercontent.com
+          anchor-file: _evidence/anchor.txt

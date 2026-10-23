@@ -1,0 +1,40 @@
+# 最小可用：打包 → 登记锚点 → 自检 → 上传。
+# 无签名也能构成证据，前提是 sha256 被登记到了包外（这里落到 artifact 与 job summary）。
+name: evidence pack
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 构建产物（示例）
+        run: |
+          mkdir -p dist configs
+          echo 'build artifact' > dist/app.bin
+          echo 'env: prod' > configs/app.yml
+
+      - name: 生成证据包
+        id: evidence
+        uses: XMZZUZHI/Github/ci-evidence-pack@main
+        with:
+          include: |
+            dist/
+            configs/
+          sbom: auto
+          # 无签名时的信任根：把 sha256 留在包外
+          anchor-file: _evidence/anchor.txt
+          expect-repo: ${{ github.repository }}
+
+      - name: 把锚点交给审计库（示例：打印到 summary）
+        run: |
+          echo "bundle sha256 = ${{ steps.evidence.outputs.bundle-sha256 }}"
+          echo "verify exit   = ${{ steps.evidence.outputs.verify-exit-code }}"

@@ -1,0 +1,36 @@
+# 下游校验：拿别处（制品库 / 工单）取回的证据包，回送包外锚点再验一遍。
+#
+# 关键：expect-sha256 必须来自包外登记的位置，不能从包里读出来再回填 ——
+# 那就等于用包证明包，什么也没证明。
+name: verify evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle-sha256:
+        description: '包外登记的 sha256'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 取回证据包
+        run: |
+          # 换成你自己的取包步骤：gh run download / aws s3 cp / curl ...
+          mkdir -p _evidence
+          echo "把 bundle 放到 _evidence/ 下"
+
+      # 只做校验时不必走 action.yml（那会先打一次包），直接用仓库内的脚本。
+      - name: 校验证据包
+        shell: bash
+        env:
+          ACTION_PATH: ${{ github.workspace }}
+          INPUT_BUNDLE: _evidence/evidence.tar.gz
+          INPUT_EXPECT_SHA256: ${{ inputs.bundle-sha256 }}
+        run: bash "$ACTION_PATH/scripts/action-verify.sh"

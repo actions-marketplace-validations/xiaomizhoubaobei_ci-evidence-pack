@@ -175,3 +175,36 @@ def test_bundle_without_tlog_is_invalid_even_if_cosign_says_ok(tmp_path, blob, m
     monkeypatch.setenv("PATH", f"{fake}:{os.environ['PATH']}")
     with pytest.raises(EvidenceInvalid, match="tlogEntries"):
         verify(blob, bundle, identity=IDENTITY, issuer=ISSUER)
+
+
+# cosign v3.1.4 真实失败输出（原样摘录，缩进已还原成 strip 后的样子）。
+# 横幅不是一行 —— 只挡首行会让"错误信息"变成一句隐私提示。
+_COSIGN_V3_FULCIO_400 = """\
+The sigstore service, hosted by sigstore a Series of LF Projects, LLC, is provided pursuant to the Hosted Project Tools Terms of Use, available at https://lfprojects.org/policies/hosted-project-tools-terms-of-use/.
+Note that if your submission includes personal data associated with this signed artifact, it will be part of an immutable record.
+This may include the email address associated with the account with which you authenticate your contractual Agreement.
+This information will be used for signing this artifact and will be stored in public transparency logs and cannot be removed later, and is subject to the Immutable Record notice at https://lfprojects.org/policies/hosted-project-tools-immutable-records/.
+
+By typing 'y', you attest that (1) you are not submitting the personal data of any other person; and (2) you understand and agree to the statement and the Agreement terms at the URLs listed above.
+Generating ephemeral keys...
+Using payload from: /tmp/blob.bin
+Signing artifact...
+Error: signing /tmp/blob.bin: signing bundle: error signing bundle: Fulcio returned 400: {"code":3,"message":"There was an error processing the identity token","details":[]}
+error during command execution: signing /tmp/blob.bin: signing bundle: error signing bundle: Fulcio returned 400: {"code":3,"message":"There was an error processing the identity token","details":[]}
+"""
+
+
+def test_real_cosign_banner_is_not_reported_as_the_error(tmp_path, blob, monkeypatch):
+    """从真 cosign 抄来的输出里，报出来的必须是 Fulcio 那句，不是隐私横幅。
+
+    这条是实测踩到的：token 无效时 cosign 退出非 0，旧实现把
+    `Note that if your submission includes personal data...` 当成了错误原因，
+    用户看到的是免责声明，真正的原因（Fulcio 400）被埋掉了。
+    """
+    from evidence_pack.signing import _first_error
+
+    proc = type("P", (), {"stderr": _COSIGN_V3_FULCIO_400, "stdout": ""})()
+    detail = _first_error(proc)
+    assert detail.startswith("signing /tmp/blob.bin")
+    assert "Fulcio returned 400" in detail
+    assert "personal data" not in detail

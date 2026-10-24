@@ -68,22 +68,41 @@ def _require_cosign() -> str:
     return exe
 
 
+# cosign v3 在真正报错前会先打一段 Sigstore 服务条款横幅，横幅不是一行而是一段：
+# 首行 `The sigstore service...`，后面跟着 `Note that if your submission includes...`
+# 之类的续行。只挡首行的话，最终抛给用户的"错误"会是那句隐私提示 —— 与失败原因
+# 毫无关系，而且看起来像工具在念免责声明。这里按行首前缀把整段挡掉。
+_COSIGN_BANNER_PREFIXES = (
+    "The sigstore service",
+    "Note that if your submission",
+    "This may include the email",
+    "This information will be used",
+    "By typing 'y'",
+)
+_ERROR_PREFIX = "Error: "
+
+
 def _first_error(proc: subprocess.CompletedProcess) -> str:
     """从 cosign 输出里挑出真正的错误行。
 
-    cosign 会先在 stderr 打一段 Sigstore 服务条款横幅，直接取第一行
-    等于把横幅当错误信息报给用户，毫无指向性。
+    优先取 `Error: ` 开头的行（cosign 自己的错误主体），其次取第一条既不是
+    横幅、也不是 `error during command execution:` 尾注的内容。
     """
-    for stream in (proc.stderr, proc.stdout):
-        for line in (stream or "").splitlines():
-            text = line.strip()
-            if not text:
-                continue
-            if text.startswith("error during command execution:"):
-                continue
-            if text.startswith("The sigstore service"):
-                continue
-            return text
+    lines = [
+        text
+        for stream in (proc.stderr, proc.stdout)
+        for raw in (stream or "").splitlines()
+        if (text := raw.strip())
+    ]
+    for text in lines:
+        if text.startswith(_ERROR_PREFIX):
+            return text[len(_ERROR_PREFIX):]
+    for text in lines:
+        if text.startswith("error during command execution:"):
+            continue
+        if text.startswith(_COSIGN_BANNER_PREFIXES):
+            continue
+        return text
     return "未知错误"
 
 

@@ -1,8 +1,8 @@
-# keyless 签名：信任根来自 OIDC 身份，而不是任何一把长期密钥。
+# 签名：信任根来自 OIDC 身份，而不是任何一把长期密钥（项目里也没有这条路）。
 # identity 必须具体到 workflow 文件，别用正则宽匹配 —— 宽匹配等于谁都能签。
 # 但 `@` 后面那截必须跟着触发 ref 走：写死 @refs/heads/main 的示例在 tag 上
 # 会判 2 —— 那是「签名身份不是我以为的那个」，跟配置笔误不是一个事故等级。
-name: evidence pack (keyless)
+name: evidence pack (signed)
 
 on:
   push:
@@ -11,7 +11,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write   # cosign keyless 必需
+  id-token: write   # 签名的全部信任根：没有它就没有短期证书
 
 jobs:
   evidence:

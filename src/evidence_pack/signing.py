@@ -4,30 +4,30 @@ cosign v3 把 `--output-signature` / `--output-certificate` 这套两文件
 形态整个废弃了，`.sigstore.json` bundle 是唯一前路。所以这里不为
 兼容旧形态留任何分支：只产 `.sigstore.json`，不产 `.sig` / `.crt`。
 
-核心是「一条路径，两种身份」：命令骨架相同，身份由 `--key` 或
-`--certificate-identity/--certificate-oidc-issuer` 二选一注入。
-不做 keyless/key 双分支——那正是原实现 `--certificate` 无条件加、
-导致 key 模式必炸的根源。
+只留一条路，没有 fallback：**签名只用 OIDC 换来的短期证书**。
+长期私钥那套（`--key` + `COSIGN_PASSWORD`）整条删掉了 —— 它需要有人保管一把
+永不过期、泄露即永久冒充的私钥，还要在 CI 里把口令倒进环境变量。OIDC 的
+信任根是「这次构建是谁跑的」，证书十分钟就过期，丢了也没有第二个人能用。
 
-keyless 的实质是 **OIDC 换短期证书**：CI 用平台签发的 OIDC token 向 Fulcio
-证明"我是谁"，Fulcio 回一张 10 分钟就过期的证书，cosign 拿这张证书签字节，
-再把证书链、签名和 Rekor 条目一起封进 bundle。所以 keyless 签名**必须有
-token**——没有 token 就没有证书，没有证书就没有信任根。
+实质是 **OIDC 换短期证书**：CI 用平台签发的 OIDC token 向 Fulcio 证明
+"我是谁"，Fulcio 回一张 10 分钟就过期的证书，cosign 拿这张证书签字节，
+再把证书链、签名和 Rekor 条目一起封进 bundle。所以签名**必须有 token**——
+没有 token 就没有证书，没有证书就没有信任根。
 
 token 从哪来：极少数情况下走 `--oidc-token` 显式传入（仅建议本地调试），
 主路径是 `--oidc-token-env VAR` 从环境变量读，CI 里由平台注入。两种写法
 都只进子进程环境，**绝不进命令行**——命令行参数会出现在 `ps`、作业日志和
 调试输出里，token 一旦漏出去，别人就能拿你的身份去签任何东西。
 
-「持钥」那一边，签名与验签用的是**不同的钥匙**：sign 收私钥，verify 收公钥。
-所以两个入口各有一个 `--verify-key`，别拿签名的参数去验签。
+验签那边自然也只剩一种身份：`--certificate-identity` + `--certificate-oidc-issuer`。
+身份给不出来就等于「接受任何人的签名」，那是没验，不是验过 —— 报用法错（1）。
 
 另有一条铁律：**签名校验不能只信退出码**。原实现 `cosign` 返回 0 就
 算 `signature_verified: true`，于是一个 `exit 0` 的假 cosign 就能骗过它。
 这里除了退出码，还要独立核对三件事：
   1. bundle 的内容摘要 == 被打包文件的摘要（digest 绑定）
   2. bundle 的结构合法（有 messageSignature 或 DSSE 信封）
-  3. keyless 模式下 bundle 里确有 tlog 条目，或明确标记 tlog_checked=false
+  3. bundle 里确有 tlog 条目，或明确标记 tlog_checked=false
 """
 
 from __future__ import annotations
@@ -50,10 +50,10 @@ DEFAULT_BUNDLE_SUFFIX = ".sigstore.json"
 class SignatureResult:
     signed: bool = False
     verified: bool = False
-    mode: str | None = None            # "key" | "keyless"
+    mode: str | None = None            # 只有 "keyless"（OIDC 短期证书）
     tlog_checked: bool = False
     bundle_path: str | None = None
-    # keyless 专有：这张证书就是本次签名的短期身份，过期即失效。
+    # 这张证书就是本次签名的短期身份，过期即失效。
     certificate_identity: str | None = None
     certificate_issuer: str | None = None
     cert_not_before: str | None = None
@@ -87,16 +87,13 @@ def _first_error(proc: subprocess.CompletedProcess) -> str:
     return "未知错误"
 
 
-def _run(cmd: list[str], password: str | None = None,
-         extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-    """cosign 只从 COSIGN_PASSWORD 读私钥口令，不接受命令行参数。
+def _run(cmd: list[str], extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    """跑 cosign。
 
-    不给口令时它会尝试从 TTY 交互读取，在 CI 里表现为莫名其妙的 ioctl 错误。
-    同理，OIDC token 走 SIGSTORE_ID_TOKEN 环境变量，不拼进 argv。
+    token 走 SIGSTORE_ID_TOKEN 环境变量，不拼进 argv。stdin 一律接 DEVNULL：
+    cosign 在没有凭据时会尝试从 TTY 交互读取，在 CI 里表现为莫名其妙的 ioctl 错误。
     """
     env = dict(os.environ)
-    if password is not None:
-        env["COSIGN_PASSWORD"] = password
     if extra_env:
         env.update(extra_env)
     try:
@@ -171,85 +168,67 @@ def _keyless_env(token: str, *, fulcio_url: str | None, rekor_url: str | None) -
     return env
 
 
-def _resolve_mode(key: str | None, identity: str | None, issuer: str | None) -> str:
-    if key and (identity or issuer):
-        raise UsageError("--key 与 --identity/--issuer 互相排斥：要么持钥，要么 keyless。")
-    if key:
-        return "key"
+def _require_identity(identity: str | None, issuer: str | None) -> None:
+    """没有期望身份就等于没验：前移到本地拦下，不把宽松判断交给 cosign。"""
     if not identity or not issuer:
-        # 前移到本地：不把宽松判断交给 cosign。
-        raise UsageError("keyless 必须同时提供 --identity 与 --issuer，否则等于接受任何人的签名。")
-    return "keyless"
+        raise UsageError("必须同时提供 --identity 与 --issuer，否则等于接受任何人的签名。")
 
 
-def sign(blob: Path, bundle: Path, *, key: str | None = None,
-         password: str | None = None, oidc_token: str | None = None,
+def sign(blob: Path, bundle: Path, *, oidc_token: str | None = None,
          fulcio_url: str | None = None, rekor_url: str | None = None) -> SignatureResult:
-    """对 blob 签名，产出 `.sigstore.json`。
+    """用 OIDC 换来的短期证书对 blob 签名，产出 `.sigstore.json`。
 
-    两条路径：
-      key 模式  —— 用私钥签，无 OIDC、无证书；
-      keyless   —— 用 OIDC token 向 Fulcio 换短期证书再签，token 缺失当场判 1，
-                   不把"没 token"这种用法问题留给 cosign 抛出难懂的 HTTP 错误。
+    没有别的路径可选：token 缺失当场判 1，不把「没 token」这种用法问题
+    留给 cosign 抛出一个难懂的 HTTP 错误（那会被读成 3，语义就错了）。
 
     签发身份由 token 决定，命令行改不了；调用方声明的期望身份只写进
     metadata/binding.json，在验签阶段核对。
     """
-    # 用法矛盾先于环境缺失判定：参数敲错了，跑到哪一步都不该被报成"工具坏了"。
-    if key and oidc_token:
-        raise UsageError("--key 与 OIDC token 互相排斥：要么持钥，要么用短期证书。")
-    extra_env: dict[str, str] = {}
-    claims: dict = {}
-    if not key:
-        if not oidc_token:
-            raise UsageError(
-                "keyless 签名必须有 OIDC token（--oidc-token 或 --oidc-token-env）："
-                "没有 token 就换不到 Fulcio 短期证书，签出来的东西没有身份可言。"
-            )
-        extra_env = _keyless_env(oidc_token, fulcio_url=fulcio_url, rekor_url=rekor_url)
-        claims = _decode_jwt_claims(oidc_token)
+    if not oidc_token:
+        raise UsageError(
+            "签名必须有 OIDC token（--oidc-token 或 --oidc-token-env）："
+            "没有 token 就换不到 Fulcio 短期证书，签出来的东西没有身份可言。"
+        )
+    extra_env = _keyless_env(oidc_token, fulcio_url=fulcio_url, rekor_url=rekor_url)
+    claims = _decode_jwt_claims(oidc_token)
 
     cosign = _require_cosign()
 
     cmd = [cosign, "sign-blob", "--yes", "--bundle", str(bundle)]
-    if key:
-        cmd += ["--key", key]
-    else:
-        # --identity-token 与 SIGSTORE_ID_TOKEN 等价，但前者会进 argv。只用环境变量。
-        if fulcio_url:
-            cmd += ["--fulcio-url", fulcio_url]
-        if rekor_url:
-            cmd += ["--rekor-url", rekor_url]
+    # --identity-token 与 SIGSTORE_ID_TOKEN 等价，但前者会进 argv。只用环境变量。
+    if fulcio_url:
+        cmd += ["--fulcio-url", fulcio_url]
+    if rekor_url:
+        cmd += ["--rekor-url", rekor_url]
     cmd.append(str(blob))
 
-    proc = _run(cmd, password, extra_env=extra_env)
+    proc = _run(cmd, extra_env=extra_env)
     if proc.returncode != 0 or not bundle.is_file():
         raise ToolFailure(f"cosign sign-blob 失败：{_first_error(proc)}")
 
     result = SignatureResult(
         signed=True,
-        mode="key" if key else "keyless",
+        mode="keyless",
         bundle_path=str(bundle),
         certificate_identity=claims.get("sub"),
         certificate_issuer=claims.get("iss"),
         detail="",
     )
-    if result.mode == "keyless":
-        # 短期证书的形态在这里就地核对：bundle 必须带证，tlog 必须有条目。
-        # 缺证书 = 拿不到身份（3）；拿不到 tlog = 签名失去了公开可审计的落点（3）。
-        data = _check_bundle_structure(bundle)
-        material = data.get("verificationMaterial") or {}
-        chain = material.get("x509CertificateChain") or {}
-        certs = chain.get("certificates") or []
-        if not certs:
-            raise ToolFailure("keyless 签出的 bundle 里没有 x509 证书链：Fulcio 短期证书没拿到。")
-        if not material.get("tlogEntries"):
-            raise ToolFailure(
-                "keyless 签出的 bundle 里没有 tlogEntries：Rekor 未记录，无法证明签名存在过。"
-                "检查 SIGSTORE_REKOR_URL 与网络。"
-            )
-        result.tlog_checked = True
-        _fill_cert_window(result, certs[0])
+    # 短期证书的形态在这里就地核对：bundle 必须带证，tlog 必须有条目。
+    # 缺证书 = 拿不到身份（3）；拿不到 tlog = 签名失去了公开可审计的落点（3）。
+    data = _check_bundle_structure(bundle)
+    material = data.get("verificationMaterial") or {}
+    chain = material.get("x509CertificateChain") or {}
+    certs = chain.get("certificates") or []
+    if not certs:
+        raise ToolFailure("签出的 bundle 里没有 x509 证书链：Fulcio 短期证书没拿到。")
+    if not material.get("tlogEntries"):
+        raise ToolFailure(
+            "签出的 bundle 里没有 tlogEntries：Rekor 未记录，无法证明签名存在过。"
+            "检查 SIGSTORE_REKOR_URL 与网络。"
+        )
+    result.tlog_checked = True
+    _fill_cert_window(result, certs[0])
     return result
 
 
@@ -328,28 +307,31 @@ def verify(
     blob: Path,
     bundle: Path,
     *,
-    verify_key: str | None = None,
     identity: str | None = None,
     issuer: str | None = None,
     ignore_tlog: bool = False,
-    password: str | None = None,
     binding: dict | None = None,
 ) -> SignatureResult:
     """验签。返回结构化的结果，失败按语义抛 EvidenceInvalid 或 ToolFailure。
 
-    `verify_key` 是 cosign **公钥**（不是签名用的私钥）。
+    只认短期证书这一种身份：cosign 拿 bundle 里的证书链去比
+    `--certificate-identity` / `--certificate-oidc-issuer`，对不上就是 2。
+
     `binding` 是包内 metadata/binding.json 声明的期望身份。它只在调用方
     没给 identity/issuer 时用来填空：声明值来自包内，本身不构成信任根，
-    真正的信任仍取决于 cosign 对公钥 / 证书链 / tlog 的校验。没填也没声明时，
-    keyless 必须报用法错 —— 那是「接受任何人的签名」，不是验证。
+    真正的信任仍取决于 cosign 对证书链与 tlog 的校验。没填也没声明时报
+    用法错 —— 那是「接受任何人的签名」，不是验证。
     """
-    cosign = _require_cosign()
-    if not verify_key and not identity and binding:
+    # 顺序是有意的：先判「参数够不够」和「bundle 是不是 bundle」，再去找 cosign。
+    # 反过来的话，一台没装 cosign 的机器会把「身份没给」报成「工具坏了」（3），
+    # 而它其实是一次用法错误（1）。
+    if not identity and binding:
         identity = binding.get("identity") or None
         issuer = binding.get("issuer") or None
-    mode = _resolve_mode(verify_key, identity, issuer)
+    _require_identity(identity, issuer)
 
     data = _check_bundle_structure(bundle)
+    cosign = _require_cosign()
 
     # 第一道闸：bundle 必须真的绑在我们要验的这份字节上。
     # 假 cosign 返回 0 也过不了这一关。
@@ -360,21 +342,14 @@ def verify(
             f"bundle 的内容摘要与文件不符：bundle 绑定 {bound}，文件实际 {actual}。"
         )
 
-    cmd = [cosign, "verify-blob", "--bundle", str(bundle)]
-    if mode == "key":
-        cmd += ["--key", verify_key or ""]
-        if ignore_tlog:
-            cmd.append("--insecure-ignore-tlog=true")
-    else:
-        cmd += [
-            "--certificate-identity", identity or "",
-            "--certificate-oidc-issuer", issuer or "",
-        ]
-        if ignore_tlog:
-            cmd.append("--insecure-ignore-tlog=true")
+    cmd = [cosign, "verify-blob", "--bundle", str(bundle),
+           "--certificate-identity", identity or "",
+           "--certificate-oidc-issuer", issuer or ""]
+    if ignore_tlog:
+        cmd.append("--insecure-ignore-tlog=true")
     cmd.append(str(blob))
 
-    proc = _run(cmd, password)
+    proc = _run(cmd)
     if proc.returncode != 0:
         raise EvidenceInvalid(f"签名无效：{_first_error(proc)}")
 
@@ -389,27 +364,25 @@ def verify(
         )
 
     tlog_present = _has_tlog(data)
-    if mode == "keyless" and not ignore_tlog and not tlog_present:
-        raise EvidenceInvalid("keyless 验签通过但 bundle 内无透明日志条目（tlogEntries 为空）。")
+    if not ignore_tlog and not tlog_present:
+        raise EvidenceInvalid("验签通过但 bundle 内无透明日志条目（tlogEntries 为空）。")
 
     result = SignatureResult(
         verified=True,
-        mode=mode,
-        # 老实回答「这一条到底查了没有」：key 模式的 bundle 本就不带 tlog，
-        # 却曾在这里报 true —— 那种绿灯是给自己看的，不是给审计看的。
+        mode="keyless",
+        # 老实回答「这一条到底查了没有」：没查过的不许报 true。
         tlog_checked=bool(tlog_present and not ignore_tlog),
         bundle_path=str(bundle),
         detail="",
     )
-    if mode == "keyless":
-        # 短期证书的窗口必须覆盖 bundle 内记录的签名时间。
-        # 证书十分钟就过期，若 Rekor 记录的签名时刻落在窗口之外，
-        # 说明这份 bundle 不是这张证书在那段时间签的 —— 证据链断裂（2）。
-        _check_certificate_window(data)
-        material = data.get("verificationMaterial") or {}
-        certs = ((material.get("x509CertificateChain") or {}).get("certificates")) or []
-        if certs:
-            _fill_cert_window(result, certs[0])
+    # 短期证书的窗口必须覆盖 bundle 内记录的签名时间。
+    # 证书十分钟就过期，若 Rekor 记录的签名时刻落在窗口之外，
+    # 说明这份 bundle 不是这张证书在那段时间签的 —— 证据链断裂（2）。
+    _check_certificate_window(data)
+    material = data.get("verificationMaterial") or {}
+    certs = ((material.get("x509CertificateChain") or {}).get("certificates")) or []
+    if certs:
+        _fill_cert_window(result, certs[0])
     return result
 
 

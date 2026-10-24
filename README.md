@@ -3,9 +3,13 @@
 把一次 CI 构建钉成一份可独立验证的证据包：确定性打包、严格 manifest、
 cosign bundle 签名、退出码 0/2/3 分层。
 
-**签名是默认动作。** 有私钥就 key 模式，没有就走 keyless（OIDC 换 Fulcio
-短期证书）。想不签，得显式说 `--no-sign` / `sign: 'false'` —— 并且自己
-准备好包外的 sha256 锚点，否则这份包不构成证据。
+**签名是默认动作，而且只有一种签法**：用本次构建的 OIDC token 向 Fulcio
+换一张十分钟就过期的短期证书。项目里没有「长期私钥」这条路，也就没有
+「有私钥就用私钥、没有才想办法」的隐式 fallback —— 那种分支最后总会在某个
+job 上悄悄降级，而你不会收到通知。
+
+想不签，得显式说 `--no-sign` / `sign: 'false'` —— 并且自己准备好包外的
+sha256 锚点，否则这份包不构成证据。
 
 > 灵感来自 [OrygnsCode/ci-evidence-pack](https://github.com/OrygnsCode/ci-evidence-pack)（MIT）。
 > 只沿用它的思路（确定性打包、严格解包、双输出模式），签名层与 CLI 全部重写。
@@ -32,10 +36,10 @@ bash install_gpg_keys.sh
 ## 当 Action 用
 
 ```yaml
-# keyless（默认路径）要 OIDC token；缺了 id-token: write 会判退出码 3
+# 签名要 OIDC token；缺了 id-token: write 会判退出码 3
 permissions:
   contents: read
-  id-token: write          # keyless 签名必需
+  id-token: write          # 签名的全部信任根
 
 steps:
   - uses: actions/checkout@v4
@@ -46,7 +50,7 @@ steps:
         dist/
         configs/
       sbom: auto
-      # 签名是默认动作：给了 cosign-key 走 key，否则走 keyless。
+      # 签名是默认动作，没有第二种身份可选。
       # 只有明确写 sign: 'false' 才会不签名 —— 那时信任根必须来自包外锚点。
       identity: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/heads/main
       anchor-file: _evidence/anchor.txt     # 把 sha256 留在包外
@@ -59,7 +63,7 @@ steps:
 | `bundle-path` / `bundle-name` | 证据包位置 |
 | `bundle-sha256` | 包外锚点就是它 |
 | `signature-bundle` | `.sigstore.json`，未签名为空 |
-| `signature-mode` | `key` / `keyless`，未签名为空 |
+| `signature-mode` | `keyless`（OIDC 短期证书），未签名为空 |
 | `signed` | 是否产出了签名 |
 | `verify-ok` / `verify-exit-code` / `verify-error` | 自检结论、0/1/2/3 与失败原因 |
 | `signature-verified` / `anchored` | 签名真的验过没有、包外锚点核对过没有 |
@@ -69,37 +73,36 @@ Action 是 composite 的，不往调用方的解释器里 `pip install`，只把
 只有写 `sign: 'false'` 时才跳过。
 
 完整示例见 [`examples/`](examples)：**发版即取证**（`release.yml`，照抄即可）、
-最小可用、keyless 签名、下游校验各一份。
+最小可用、显式签名、下游校验各一份。
 
 只想尽快用起来，直接把 [`examples/release.yml`](examples/release.yml) 复制到
-你仓库的 `.github/workflows/` 下，然后改两处：`include` 里的产物路径、
-以及（可选）`COSIGN_KEY_B64` / `COSIGN_PUBLIC_KEY_B64` / `COSIGN_PASSWORD`
-三个 secret。没配密钥也不会红：示例留空 `sign`（保持默认），签名走 keyless，
-信任根是 job 的 OIDC token，不需要任何长期密钥。
+你仓库的 `.github/workflows/` 下，改一处：`include` 里的产物路径。
+不需要任何密钥 —— 信任根是 job 的 OIDC token。
 
 ### OIDC 权限：默认签名绕不开的一步
 
-签名默认开启，而默认路径是 keyless —— 它的信任根不是密钥，而是平台签发的
-OIDC token。所以 job 必须显式打开 OIDC 权限：
+签名默认开启，而它唯一的信任根是平台签发的 OIDC token（换短期证书用）。
+所以 job 必须显式打开 OIDC 权限：
 
 ```yaml
 permissions:
   contents: read
-  id-token: write   # keyless 签名必需：没有它就拿不到 OIDC token
+  id-token: write   # 签名的全部信任根：没有它就拿不到 OIDC token
 ```
 
 `id-token` 默认是 `none`，且 **job 级 `permissions` 一旦写了就是白名单**：
 顶层给了 `id-token: write` 不算，job 里重写 `permissions` 就会把它覆盖掉。
 
-三条路，任选其一：
+两条路，任选其一：
 
 | 情况 | 怎么办 |
 |---|---|
-| GitHub 托管 runner | 加 `id-token: write`，走 keyless（推荐） |
-| 自托管 / 本地，没有 OIDC | 给 `cosign-key`，走 key 模式（不需要 OIDC） |
-| 两者都没有 | 显式 `sign: 'false'`，并自备包外 sha256 锚点 |
+| GitHub 托管 runner | 加 `id-token: write`，OIDC 换短期证书（推荐） |
+| 自托管 / 本地，没有 OIDC 签发方 | 显式 `sign: 'false'`，并自备包外 sha256 锚点 |
 
-前两条都走不通又不肯关签名，Action 会当场以退出码 3 报出「缺 OIDC token」，
+没有第三条「私钥兜底」的路：长期私钥要在 CI 里注入口令，泄露一次就永久被冒充，
+它不该是那个在你拿不到 OIDC 时自动生效的备选。
+两条路都不走又不肯关签名，Action 会当场以退出码 3 报出「缺 OIDC token」，
 而不是静默不签 —— 一份「以为签了其实没签」的证据，比没有证据更危险。
 
 顺带一句：OIDC token 有时效（GitHub 上是 job 级、短期），且只在 job 运行期间有效。
@@ -136,10 +139,7 @@ Python 项目缺 `cyclonedx-py` 时会退到 `requirements.txt` 的内置解析�
 ## 用法
 
 ```bash
-# 打包 + 签名（默认）：给了 --key 走 key，否则走 keyless
-COSIGN_PASSWORD=... evidence-pack pack --repo . --include dist --key cosign.key
-
-# keyless：用 OIDC token 换 Fulcio 短期证书（CI 里的主路径）
+# 打包 + 签名（默认）：用 OIDC token 换 Fulcio 短期证书
 export SIGSTORE_ID_TOKEN=<平台注入的 OIDC token>
 evidence-pack pack --repo . --include dist --oidc-token-env SIGSTORE_ID_TOKEN \
   --identity "https://github.com/org/repo/.github/workflows/ci.yml@refs/heads/main"
@@ -150,12 +150,7 @@ evidence-pack pack --repo . --include dist --no-sign
 # 验包：带外部锚点
 evidence-pack verify bundle.tar.gz --expect-sha256 <hex>
 
-# 验包：key 模式（签名用私钥，验签用公钥）
-evidence-pack verify bundle.tar.gz \
-  --signature-bundle bundle.tar.gz.sigstore.json \
-  --verify-key cosign.pub
-
-# 验包：keyless，身份必须写死到具体 workflow 文件
+# 验包：身份必须写死到具体 workflow 文件
 evidence-pack verify bundle.tar.gz \
   --signature-bundle bundle.tar.gz.sigstore.json \
   --identity "https://github.com/org/repo/.github/workflows/ci.yml@refs/heads/main" \
@@ -165,7 +160,7 @@ evidence-pack verify bundle.tar.gz \
 evidence-pack verify bundle.tar.gz --expect-sha256 <hex> --exit-code --json
 ```
 
-## keyless：OIDC 换短期证书
+## 签名：OIDC 换短期证书
 
 没有长期私钥可管，身份来自 CI 平台签发的 OIDC token：
 
@@ -174,7 +169,7 @@ evidence-pack verify bundle.tar.gz --expect-sha256 <hex> --exit-code --json
 2. cosign 拿 token 找 Fulcio 换一张**十几分钟就过期**的证书，私有钥当场生成、签完即弃；
 3. 签名连同证书链、Rekor 条目一起封进 `.sigstore.json`。
 
-所以 keyless 的信任根不是密钥，而是**那对 (identity, issuer)**。验签时必须同时给：
+所以信任根不是密钥，而是**那对 (identity, issuer)**。验签时必须同时给：
 
 ```bash
 evidence-pack verify bundle.tar.gz \
@@ -203,7 +198,7 @@ token 只经 `SIGSTORE_ID_TOKEN` 进子进程，**从不拼进 argv**。私有 F
 
 证书窗口很短，所以判定也短：
 
-- keyless 签出的 bundle **必须**带证书链和 tlog 条目，缺一样判 3（Fulcio/Rekor 没通）
+- 签出的 bundle **必须**带证书链和 tlog 条目，缺一样判 3（Fulcio/Rekor 没通）
 - 验签时 Rekor 记录的签名时刻若落在证书有效期之外，判 2 —— 那不是这张证书签的
 - `--insecure-ignore-tlog` 可以跳过 tlog，但结果里 `tlog_checked` 会是 `false`，如实标注
 

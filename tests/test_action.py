@@ -240,7 +240,6 @@ def _action_env(workspace: Path, **inputs: str) -> dict:
         "INPUT_BUNDLE_NAME": "",
         # 与 action.yml 的默认保持一致：默认签名。不签的用例显式传 "false"。
         "INPUT_SIGN": "true",
-        "INPUT_COSIGN_KEY": "",
         "INPUT_ARTIFACT_NAME": "",
         "INPUT_IDENTITY": "",
         "INPUT_ISSUER": "",
@@ -309,7 +308,6 @@ def test_pack_then_verify_roundtrip(workspace):
         INPUT_SIGN="false",
         INPUT_BUNDLE=out["bundle-path"],
         INPUT_SIGNATURE_BUNDLE="",
-        INPUT_COSIGN_PUBLIC_KEY="",
         INPUT_EXPECT_SHA256=out["bundle-sha256"],
         INPUT_EXPECT_REPO="",
     )
@@ -319,89 +317,23 @@ def test_pack_then_verify_roundtrip(workspace):
     assert verified["ok"] == "true" and verified["exit-code"] == "0"
 
 
-@pytest.mark.skipif(COSIGN is None, reason="需要 cosign")
-def test_key_mode_sign_and_verify_through_action(workspace, tmp_path):
-    """Action 的 key 模式：pack 用私钥签名，verify 用公钥验签。
+def test_action_has_no_private_key_inputs():
+    """私钥 fallback 必须从 Action 的契约里消失，而不只是不再被读取。
 
-    这里给的公钥与私钥是两把不同的文件 —— 这正是旧 Action 缺的那个输入。
+    留着 `cosign-key` 输入是最糟的一种：调用方以为配了就换了信任根，
+    Action 却根本不看它 —— 于是签出来的仍然是 OIDC 身份，而没人会去核对。
     """
-    key_prefix = tmp_path / "cosign"
-    # 口令要走子进程的环境变量：Action 里由 CI 注入 COSIGN_PASSWORD。
-    env = dict(os.environ, COSIGN_PASSWORD="test-only")
-    made = subprocess.run(
-        [COSIGN, "generate-key-pair", "--output-key-prefix", str(key_prefix)],
-        capture_output=True, text=True, env=env, check=False, stdin=subprocess.DEVNULL,
-    )
-    assert made.returncode == 0, made.stderr
-
-    packed = _call(
-        "action-pack.sh",
-        _action_env(
-            workspace,
-            INPUT_SIGN="true",
-            INPUT_COSIGN_KEY=str(key_prefix) + ".key",
-            COSIGN_PASSWORD="test-only",
-        ),
-        cwd=workspace,
-    )
-    assert packed.returncode == 0, packed.stdout + packed.stderr
-    out = _gh_outputs(workspace.parent / "gh-output.txt")
-    assert out["signed"] == "true" and out["signature-mode"] == "key"
-    assert Path(out["signature-bundle"]).is_file()
-
-    verified = _call(
-        "action-verify.sh",
-        _action_env(
-            workspace,
-            INPUT_BUNDLE=out["bundle-path"],
-            INPUT_SIGNATURE_BUNDLE=out["signature-bundle"],
-            INPUT_COSIGN_PUBLIC_KEY=str(key_prefix) + ".pub",
-            INPUT_EXPECT_SHA256=out["bundle-sha256"],
-            INPUT_EXPECT_REPO="",
-        ),
-        cwd=workspace,
-    )
-    assert verified.returncode == 0, verified.stdout + verified.stderr
-    result = _gh_outputs(workspace.parent / "gh-output.txt")
-    assert result["signature-verified"] == "true"
+    inputs = _manifest()["inputs"]
+    assert "cosign-key" not in inputs
+    assert "cosign-public-key" not in inputs
 
 
-@pytest.mark.skipif(COSIGN is None, reason="需要 cosign")
-def test_signature_without_public_key_is_usage_error_not_green(workspace, tmp_path):
-    """有签名 bundle 但没给公钥：旧实现会走进 keyless 分支报用法错 —— 那没错，
-    但报得太晦涩。这里只钉住「不许判绿」。"""
-    key_prefix = tmp_path / "cosign"
-    env = dict(os.environ, COSIGN_PASSWORD="test-only")
-    subprocess.run(
-        [COSIGN, "generate-key-pair", "--output-key-prefix", str(key_prefix)],
-        capture_output=True, text=True, env=env, check=False, stdin=subprocess.DEVNULL,
-    )
-    packed = _call(
-        "action-pack.sh",
-        _action_env(
-            workspace,
-            INPUT_SIGN="true",
-            INPUT_COSIGN_KEY=str(key_prefix) + ".key",
-            COSIGN_PASSWORD="test-only",
-        ),
-        cwd=workspace,
-    )
-    assert packed.returncode == 0, packed.stdout + packed.stderr
-    out = _gh_outputs(workspace.parent / "gh-output.txt")
-
-    verified = _call(
-        "action-verify.sh",
-        _action_env(
-            workspace,
-            INPUT_BUNDLE=out["bundle-path"],
-            INPUT_SIGNATURE_BUNDLE=out["signature-bundle"],
-            INPUT_COSIGN_PUBLIC_KEY="",
-            INPUT_EXPECT_SHA256=out["bundle-sha256"],
-            INPUT_EXPECT_REPO="",
-        ),
-        cwd=workspace,
-    )
-    assert verified.returncode != 0
+def test_action_never_mentions_private_key_paths():
+    """脚本里也不许有「有私钥就用私钥」的隐式分支。"""
+    for name in ("action-pack.sh", "action-verify.sh"):
+        text = (SCRIPTS / name).read_text(encoding="utf-8")
+        assert "INPUT_COSIGN_KEY" not in text, f"{name} 仍在读私钥输入"
+        assert "--verify-key" not in text, f"{name} 仍在用公钥验签"
 
 
 def test_anchor_then_upload_paths_are_real(workspace):
@@ -525,7 +457,6 @@ def test_oidc_token_is_exchanged_before_signing(workspace, tmp_path):
         env = _action_env(
             workspace,
             INPUT_SIGN="true",
-            INPUT_COSIGN_KEY="",           # 没私钥 → 必须走 keyless
             ACTIONS_ID_TOKEN_REQUEST_URL=f"http://127.0.0.1:{server.server_port}/oidc?x=1",
             ACTIONS_ID_TOKEN_REQUEST_TOKEN="request-token",
         )
@@ -798,10 +729,9 @@ def test_examples_that_default_to_signing_have_id_token():
                     continue
                 with_ = step.get("with") or {}
                 sign = str(with_.get("sign", ""))
-                # 给了具体的私钥路径 = key 模式，不走 OIDC；写成表达式则是条件切换。
-                if with_.get("cosign-key") and "${{" not in str(with_["cosign-key"]):
-                    continue
-                # 显式留空 = 不签名；给了 sign 就必须是 'true'（keyless 默认签名）
+                # 现在的签名只有 OIDC 一条路：凡是不显式写 sign: 'false' 的示例，
+                # 都必须把 id-token: write 开出来，没有别的分支可绕。
+                # 显式留空 = 沿用默认（签名）；给了 sign 就必须是 'true'
                 if not sign:
                     if "sign" in with_:
                         continue
@@ -814,12 +744,12 @@ def test_examples_that_default_to_signing_have_id_token():
 
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
-def test_example_key_setup_requires_both_keys(path):
-    """只配私钥不配公钥：签得出、验不了，示例必须当场拦下。"""
+def test_examples_do_not_manage_private_keys(path):
+    """示例里不该再出现私钥那一套：密钥 secret、base64 落盘、COSIGN_PASSWORD。
+
+    留一段「配了私钥就切 key 模式」的模板，等于把删掉的 fallback 又教回去。
+    """
     text = path.read_text(encoding="utf-8")
-    if "COSIGN_KEY_B64" not in text:
-        return
-    assert "COSIGN_PUBLIC_KEY_B64" in text, f"{path.name} 只处理了私钥"
-    assert '::error::' in text and "COSIGN_PUBLIC_KEY_B64" in text, (
-        f"{path.name} 没有在「只有私钥」时当场拦下"
-    )
+    for banned in ("COSIGN_KEY_B64", "COSIGN_PUBLIC_KEY_B64", "COSIGN_PASSWORD",
+                   "cosign-key", "cosign-public-key"):
+        assert banned not in text, f"{path.name} 仍在示范私钥方案：{banned}"

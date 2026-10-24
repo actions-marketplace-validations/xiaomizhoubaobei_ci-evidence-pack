@@ -18,7 +18,7 @@
 ```yaml
 permissions:
   contents: read
-  id-token: write   # keyless 签名必需
+  id-token: write   # 签名的全部信任根
 
 steps:
   - uses: actions/checkout@v4
@@ -29,7 +29,7 @@ steps:
         dist/
         configs/
       sbom: auto
-      sign: 'true'                # 不给 cosign-key 就走 keyless
+      sign: 'true'                # 用 OIDC 换短期证书，没有第二种身份
       # identity 留空 = 按本次触发的 repository + workflow + ref 自动拼。
       # 要显式写就把 ref 也交给表达式，别把 @refs/heads/main 刻进文件里。
       identity: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@${{ github.ref }}
@@ -41,7 +41,7 @@ steps:
 它做的事，按顺序：
 
 1. 检查 `python3 >= 3.10`（不往你的环境里装包，只借 `PYTHONPATH`）
-2. `sign: true` 时装 cosign
+2. `sign: 'true'` 时装 cosign，并拿 OIDC 换短期证书
 3. `pack` → 包与 `.sigstore.json`
 4. `anchor-file` 有值时把 sha256 追加登记（包外台账）
 5. `verify: true`（默认）自检：有签名验签名，没签名则以 `expect-sha256` 为锚点
@@ -56,9 +56,7 @@ steps:
 | `sbom` | `auto` | `auto` / `none` / `python` / `node` |
 | `out-dir` | `_evidence` | 输出目录，会自动排除在收集范围外 |
 | `bundle-name` | `evidence-<短sha>.tar.gz` | 包名（保存时会去掉开头的点） |
-| `sign` | 空（不签） | 只有小写 `'true'` 才算开。条件传值时用 `cond && 'true' \|\| ''`，别直接传 outputs（会渲染成 `'False'`） |
-| `cosign-key` | 空 | cosign **私钥**，仅用于签名；口令用 `COSIGN_PASSWORD` 环境变量 |
-| `cosign-public-key` | 空 | cosign **公钥**，仅用于验签。签名用私钥、验签用公钥，不能互换 |
+| `sign` | `'true'`（签名） | 只有小写 `'false'` 才算关。条件传值时用 `cond && 'false' \|\| ''`，别直接传 outputs（会渲染成 `'False'`） |
 | `identity` / `issuer` | identity 按触发 ref 自动拼，issuer 默认 GitHub OIDC | 期望签发身份，写进包内 `binding.json` |
 | `verify` | `true` | 打完包立刻自检 |
 | `expect-sha256` | 空（用本次产物的 sha） | 包外锚点 |
@@ -121,7 +119,7 @@ steps:
 main:
   push:
     - stages:
-        - name: 打包并 keyless 签名
+        - name: 打包并签名（OIDC 短期证书）
           script: |
             pip install evidence-pack
             export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
@@ -155,11 +153,11 @@ identity 要和签名那次**完全一致**：workflow 文件路径 + ref。改�
 把 `@refs/heads/main` 抄进一个 tag 触发的流水线，只会在签完名之后判 2：
 「签名身份不是我以为的那个」，跟配置笔误不是一个事故等级。
 
-## GitHub Actions 的 keyless 写法
+## GitHub Actions 的 OIDC 签名链路
 
-用 Action 的话不必自己换 token：`sign: 'true'` 之后，`scripts/action-oidc.sh`
+用 Action 的话不必自己换 token：`sign: 'true'` 之后，`scripts/action-pack.sh`
 会拿 runner 注入的 `ACTIONS_ID_TOKEN_REQUEST_URL` + `ACTIONS_ID_TOKEN_REQUEST_TOKEN`
-去换一枚 `audience=sigstore` 的 token。
+去换一枚 `audience=sigstore` 的 token。这是唯一的签名链路，没有私钥备胎。
 
 **这里有个坑值得单独说**：`ACTIONS_ID_TOKEN_REQUEST_TOKEN` 是**换 token 的凭据**，
 不是 token 本体。把它当 token 用，Fulcio 只会回 401，而现场看起来跟
@@ -209,20 +207,11 @@ main:
 [`examples/release.yml`](examples/release.yml) 覆盖的是最常见的发版诉求：
 打 tag → 打包产物 → 签名 → 自检 → 挂到 Release，并把 sha256 写进 Release 正文。
 
-需要你改的只有两处：
+需要你改的只有一处：`include` 里的产物路径（`dist/` 换成你真实的产物目录）。
+不需要配任何密钥 —— 信任根是 job 的 OIDC token，job 上开 `id-token: write` 即可。
 
-1. `include` 里的产物路径（`dist/` 换成你真实的产物目录）
-2. 三个 secret（可选）：`COSIGN_KEY_B64`、`COSIGN_PUBLIC_KEY_B64`、`COSIGN_PASSWORD`
-
-密钥用 base64 存，是因为 PEM 里的换行经 YAML / JSON 一转手很容易被吃掉，
-而「少了换行的私钥」只会报一句难以理解的解析错误。
-
-```bash
-base64 -w0 cosign.key   # 填进 COSIGN_KEY_B64
-base64 -w0 cosign.pub   # 填进 COSIGN_PUBLIC_KEY_B64
-```
-
-没配密钥也照样跑：`sign` 会留空，退化成「无签名 + sha256 锚点」模式。
+想彻底不签名（比如自托管 runner 拿不到 OIDC），写 `sign: 'false'`，
+并且必须自己把 sha256 登记到包外 —— 否则自检会如实判 2。
 
 ## 关于 `expect-repo` 的边界
 

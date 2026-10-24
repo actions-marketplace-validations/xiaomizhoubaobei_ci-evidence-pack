@@ -66,12 +66,14 @@ RUN_ENV_KEYS = {
 class PackOptions:
     """打包参数。
 
-    默认为签名：没有 `--key` 就走 keyless（OIDC 换来的 Fulcio 短期证书），
+    默认为签名，且只有一种签法：用 OIDC token 换 Fulcio 短期证书。
+    没有长期私钥的入口 —— 那把钥匙既要在 CI 里放口令，又是永久有效的冒充凭证，
+    留着它就等于给「一次构建的身份」配了一把万能钥匙。
     `--no-sign` 才退化成「无签名 + 包外锚点」。
 
-    `identity` / `issuer` 在打包阶段只是**期望值**：keyless 签名时它们会被写进
-    metadata/binding.json 供验签方核对，同时透传给 cosign 做签发身份约束。
-    它们本身不是签名开关——把期望身份当开关，正是原实现的坑。
+    `identity` / `issuer` 在打包阶段只是**期望值**：它们会被写进
+    metadata/binding.json 供验签方核对。它们本身不是签名开关——
+    把期望身份当开关，正是原实现的坑。
     """
 
     repo_root: Path
@@ -79,10 +81,9 @@ class PackOptions:
     includes: list[str]
     sbom: str = "auto"
     collect_git: bool = True
-    key: str | None = None
     identity: str | None = None
     issuer: str | None = None
-    # keyless 用 OIDC token 换 Fulcio 短期证书；token 只经环境变量进子进程。
+    # 签名用 OIDC token 换 Fulcio 短期证书；token 只经环境变量进子进程。
     oidc_token: str | None = None
     fulcio_url: str | None = None
     rekor_url: str | None = None
@@ -231,15 +232,14 @@ def pack(opts: PackOptions) -> PackResult:
         bundle_sha = sha256_bytes(payload)
 
     sig = SignatureResult()
-    # 三条触发路径任一成立即签：--sign 显式要求、给了私钥、或给了 OIDC token。
+    # 两条触发路径任一成立即签：--sign 显式要求，或给了 OIDC token。
     # identity/issuer 是"验签时"的期望值，签名时并不需要——把它们当签名开关
-    # 是原实现的坑，所以这里只认 sign / key / oidc_token。
-    if opts.sign or opts.key or opts.oidc_token:
+    # 是原实现的坑，所以这里只认 sign / oidc_token。
+    if opts.sign or opts.oidc_token:
         bundle_file = out_dir / bundle_name
         sig = sign_bundle(
             bundle_file,
             out_dir / (bundle_name + DEFAULT_BUNDLE_SUFFIX),
-            key=opts.key,
             oidc_token=opts.oidc_token,
             fulcio_url=opts.fulcio_url,
             rekor_url=opts.rekor_url,

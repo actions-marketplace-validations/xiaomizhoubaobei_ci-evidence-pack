@@ -36,11 +36,15 @@ inputs:
   sign:
     description: |
       是否用 cosign 签名，默认 'true'（签名是默认动作，关掉要明说）。
-      给了 cosign-key 走 key 模式，否则走 keyless —— keyless 的信任根是 OIDC，
+
+      签名只有一种身份：用本次构建的 OIDC token 向 Fulcio 换一张短期证书，
+      证书十分钟就过期。没有长期私钥这条路 —— 一把永不过期、泄露即永久冒充的
+      私钥，不该成为「可选 fallback」。
+
       所以 job 必须声明 permissions.id-token: write（job 级 permissions 会覆盖
-      顶层声明，要写在 job 上）。该权限只在 GitHub 托管 runner 上有；
-      自托管 / 本地没有 OIDC 签发方，请改用 cosign-key，或显式 'false' 并
-      以包外 sha256 锚点当信任根。关掉签名只在你有另一条包外锚点时才是可辩护的。
+      顶层声明，要写在 job 上），且该权限只在 GitHub 托管 runner 上有。
+      自托管 / 本地没有 OIDC 签发方时，只能显式 'false' 并以包外 sha256 锚点
+      当信任根 —— 那时信任的是「你把摘要登记在哪里」，不是这个包自己。
 
       判定只认字面量 'false'：留空 / 其它值都按默认签名处理。
       条件传值时写 `cond && 'false' || ''`，别直接传 outputs ——
@@ -48,26 +52,14 @@ inputs:
     required: false
     default: 'true'
 
-  cosign-key:
-    description: |
-      cosign **私钥**路径，仅用于签名（key 模式）。口令请通过 COSIGN_PASSWORD
-      环境变量注入，不要写在这个输入里 —— 输入会被流水线日志记住
-    required: false
-    default: ''
-
-  cosign-public-key:
-    description: |
-      cosign **公钥**路径，仅用于验签。签名用私钥、验签用公钥，两者不能互换：
-      填错时 cosign 会直接拒绝，不会「凑合着验」
-    required: false
-    default: ''
-
   identity:
     description: |
-      keyless 期望签发身份，例如
+      期望签发身份（短期证书里的 sub），例如
       https://github.com/<owner>/<repo>/.github/workflows/<file>.yml@refs/heads/main
       会被写进包内 metadata/binding.json，并作为验签时的默认期望值。
 
+      不给、包内也没有 binding.json 声明时，验签直接报用法错（1）：
+      没有期望身份就是「接受任何人的签名」，那不是验证。
       留空时自动拼：repository + workflow_ref + ref_name
       （在 tag 上跑就是 .../<file>.yml@refs/tags/v1.0.0）。
       写死 @refs/heads/main 的写法在 tag 上必然验不过，那不是配置笔误，
@@ -76,14 +68,14 @@ inputs:
     default: ''
 
   issuer:
-    description: 'keyless 期望 OIDC issuer，默认 https://token.actions.githubusercontent.com'
+    description: '期望 OIDC issuer，默认 https://token.actions.githubusercontent.com'
     required: false
     default: 'https://token.actions.githubusercontent.com'
 
   verify:
     description: |
-      打完包后立刻自检。true 时：有签名则验签名，无签名则要求同时提供 expect-sha256，
-      否则会如实判成「不构成证据」（退出码 2）
+      打完包后立刻自检。true 时：有签名则验签名（按 identity / issuer 核对证书），
+      无签名则要求同时提供 expect-sha256，否则会如实判成「不构成证据」（退出码 2）
     required: false
     default: 'true'
 
@@ -146,7 +138,7 @@ outputs:
     description: "'true' 表示已产出签名 bundle"
     value: ${{ steps.pack.outputs.signed }}
   signature-mode:
-    description: 'key / keyless；未签名时为空'
+    description: 'keyless（OIDC 短期证书）；未签名时为空'
     value: ${{ steps.pack.outputs.signature-mode }}
   file-count:
     description: '包内文件数（不含 manifest 自身）'
@@ -193,8 +185,7 @@ runs:
         }
 
     # 只在真要签名时装。判据与 scripts/action-pack.sh 保持一致：
-    # 小写 'true' 才算开，空串 / 'false' / 'False' 一律不算 —— 一个渲染出来的
-    # 布尔值不该把一次打包变成「找不到 cosign」。
+    # 小写 'false' 才算关，空串 / 其它值一律按默认（签名）处理。
     - name: 安装 cosign
       if: inputs.sign == 'true'
       uses: sigstore/cosign-installer@v3
@@ -259,7 +250,6 @@ runs:
         INPUT_OUT_DIR: ${{ inputs.out-dir }}
         INPUT_BUNDLE_NAME: ${{ inputs.bundle-name }}
         INPUT_SIGN: ${{ inputs.sign }}
-        INPUT_COSIGN_KEY: ${{ inputs.cosign-key }}
         INPUT_ARTIFACT_NAME: ${{ inputs.artifact-name }}
         # identity 留空时按 realm/workflow_ref 现拼：identity 里的 @refs/...
         # 必须跟着本次触发的 ref 走，写死 main 的示例在 tag 上必然判 2。
@@ -287,7 +277,6 @@ runs:
         INPUT_BUNDLE: ${{ steps.pack.outputs.bundle-path }}
         # 未签名时这个值为空字符串，脚本据此跳过签名校验（而不是拿空路径去调 cosign）。
         INPUT_SIGNATURE_BUNDLE: ${{ steps.pack.outputs.signature-bundle }}
-        INPUT_COSIGN_PUBLIC_KEY: ${{ inputs.cosign-public-key }}
         # 与打包步骤同源：验签要用的期望身份就是打包时写进 binding.json 的那个。
         INPUT_IDENTITY: ${{ inputs.identity || format('https://github.com/{0}/{1}@{2}', github.repository, github.workflow_ref, github.ref_name) }}
         INPUT_ISSUER: ${{ inputs.issuer }}

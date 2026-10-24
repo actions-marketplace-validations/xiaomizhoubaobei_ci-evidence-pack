@@ -62,15 +62,14 @@ def pack(
     sbom: str = typer.Option("auto", "--sbom", help="auto | none | python | node"),
     collect_git: bool = typer.Option(True, "--collect-git/--no-collect-git"),
     exclude: list[str] = typer.Option(None, "--exclude", help="额外排除的路径名"),
-    key: str = typer.Option(None, "--key", help="cosign 私钥路径（key 模式）"),
     sign: bool = typer.Option(
         True, "--sign/--no-sign",
-        help="是否签名，默认为真：给了 --key 走 key 模式，否则走 keyless（需 OIDC token / id-token: write）。"
+        help="是否签名，默认为真：用 OIDC token 换 Fulcio 短期证书签（需 id-token: write）。"
              "--no-sign 只应在「另有一条包外锚点」时使用",
     ),
     oidc_token_env: str = typer.Option(
         None, "--oidc-token-env",
-        help="从该环境变量读 OIDC token，换 Fulcio 短期证书（keyless 推荐用法）",
+        help="从该环境变量读 OIDC token，换 Fulcio 短期证书（推荐用法）",
     ),
     oidc_token: str = typer.Option(
         None, "--oidc-token",
@@ -92,7 +91,6 @@ def pack(
             includes=list(include or []),
             sbom=sbom,
             collect_git=collect_git,
-            key=key,
             identity=identity,
             issuer=issuer,
             oidc_token=resolve_oidc_token(oidc_token, oidc_token_env),
@@ -127,12 +125,8 @@ def pack(
 def verify(
     bundle: Path = typer.Argument(..., help="证据包 .tar.gz"),
     signature_bundle: Path = typer.Option(None, "--signature-bundle", help=".sigstore.json"),
-    verify_key: str = typer.Option(
-        None, "--verify-key",
-        help="cosign **公钥**（key 模式验签）。签名用私钥、验签用公钥，别混",
-    ),
-    identity: str = typer.Option(None, "--identity", help="keyless 期望身份"),
-    issuer: str = typer.Option(None, "--issuer", help="keyless 期望 OIDC issuer"),
+    identity: str = typer.Option(None, "--identity", help="期望签发身份（短期证书里的 sub）"),
+    issuer: str = typer.Option(None, "--issuer", help="期望 OIDC issuer"),
     ignore_tlog: bool = typer.Option(False, "--insecure-ignore-tlog", help="跳过透明日志校验（结果会标记 tlog_checked=false）"),
     expect_sha256: str = typer.Option(None, "--expect-sha256", help="外部锚点：期望的 bundle sha256"),
     expect_repo: str = typer.Option(None, "--expect-repo", help="外部锚点：期望的 owner/repo"),
@@ -146,7 +140,7 @@ def verify(
     """校验证据包。退出码：0 通过 / 1 用法 / 2 证据无效 / 3 工具异常。"""
     if exit_code:
         _verify_reporting(
-            bundle, signature_bundle, verify_key, identity, issuer, ignore_tlog,
+            bundle, signature_bundle, identity, issuer, ignore_tlog,
             expect_sha256, expect_repo, quiet, as_json,
         )
         return
@@ -154,7 +148,6 @@ def verify(
         result = run_verify(VerifyOptions(
             bundle_path=bundle,
             signature_bundle=signature_bundle,
-            verify_key=verify_key,
             identity=identity,
             issuer=issuer,
             ignore_tlog=ignore_tlog,
@@ -186,7 +179,6 @@ def verify(
 def _verify_reporting(
     bundle: Path,
     signature_bundle: Path | None,
-    verify_key: str | None,
     identity: str | None,
     issuer: str | None,
     ignore_tlog: bool,
@@ -203,7 +195,6 @@ def _verify_reporting(
     result = run_verify(VerifyOptions(
         bundle_path=bundle,
         signature_bundle=signature_bundle,
-        verify_key=verify_key,
         identity=identity,
         issuer=issuer,
         ignore_tlog=ignore_tlog,

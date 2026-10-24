@@ -83,14 +83,29 @@ def test_verify_with_anchor_is_exit_0(tmp_path):
     assert json.loads(js.stdout)["anchored"] is True
 
 
-def test_key_mode_without_cosign_is_exit_3(tmp_path):
-    """给了私钥就走 key 模式，PATH 里没有 cosign 属于工具异常（3）。"""
+def test_signing_without_cosign_is_exit_3(tmp_path):
+    """签名缺 cosign 属于工具异常（3）：证据没坏，是流水线坏了。"""
     r = repo(tmp_path)
+    token = "h." + "p" * 120 + ".s"   # 形状合法的三段式 token，够过本地检查
     js = run("pack", "--repo", str(r), "--out", "dist", "--include", "src",
-             "--sbom", "none", "--key", "nonexistent.key", "--json",
+             "--sbom", "none", "--oidc-token", token, "--json",
              cwd=r, env={"PATH": "/nonexistent", "SOURCE_DATE_EPOCH": "1700000000"},
              expect=EXIT_TOOL_FAILURE)
     assert "cosign" in json.loads(js.stdout)["error"]
+
+
+def test_private_key_flag_no_longer_exists(tmp_path):
+    """`--key` 整条路已移除：再有人照着旧文档敲，得到的该是明确的用法错（1/2），
+    而不是「静默改用别的签法」。"""
+    r = repo(tmp_path)
+    proc = __import__("subprocess").run(
+        [__import__("sys").executable, "-m", "evidence_pack.cli", "pack",
+         "--repo", str(r), "--include", "src", "--key", "cosign.key"],
+        capture_output=True, text=True, cwd=r,
+        env=dict(__import__("os").environ, PYTHONPATH=SRC),
+    )
+    assert proc.returncode != 0
+    assert "No such option" in proc.stderr
 
 
 def test_verify_usage_error_when_bundle_missing(tmp_path):

@@ -59,16 +59,16 @@ done
 # 签名是默认动作：内核默认就签，这里只负责把「不签」这件事显式传下去。
 # 只有 sign: false 才会走到 --no-sign —— 那时信任根必须来自包外锚点，
 # 否则下游 verify 会如实判 2（包内自洽不算证据）。
+# 签名只有一条路：OIDC 换短期证书。没有长期私钥的入口，也就没有「有私钥就用私钥、
+# 没有才想办法」这种隐式 fallback —— 那种分支最后总会在某个 job 上悄悄降级。
 if [ "${INPUT_SIGN:-true}" = "false" ]; then
   ARGS+=(--no-sign)
-elif [ -n "${INPUT_COSIGN_KEY:-}" ]; then
-  ARGS+=(--key "$INPUT_COSIGN_KEY")
 else
-  # keyless 靠 runner 派发的 OIDC token，命令行给不了也没法伪造。
+  # 靠 runner 派发的 OIDC token，命令行给不了也没法伪造。
   # 判据是「有没有签发方」而不是「token 字面量在不在」：GitHub 托管 runner 上
   # 就绪的是 ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN 这对凭据，token 要拿它去换。
   if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] && [ -z "${SIGSTORE_ID_TOKEN:-}" ]; then
-    echo "::error::未提供 cosign-key，走 keyless 就需要 id-token: write，且只在 GitHub 托管 runner 上有 OIDC token。自托管 / 本地请改用 cosign-key，或显式 sign: 'false'（此时必须有包外锚点）"
+    echo "::error::签名的信任根只有 OIDC：job 需要 id-token: write，且只在 GitHub 托管 runner 上有 OIDC 签发方。自托管 / 本地没有签发方，请显式 sign: 'false'（此时必须有包外锚点）"
     exit 3
   fi
 fi
@@ -85,7 +85,7 @@ if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
 fi
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(date +%s)}"
 
-# keyless 要的是 token 本体，而 GitHub 托管 runner 上就绪的
+# 签名要的是 token 本体，而 GitHub 托管 runner 上就绪的
 # ACTIONS_ID_TOKEN_REQUEST_TOKEN 只是**换 token 的凭据**，不是 token。
 # 少了这一步，job 明明开了 id-token: write，签名仍会在 Fulcio 那里 401 ——
 # 现场看起来就跟「权限没开」一模一样。所以在这里换出来，交给内核。

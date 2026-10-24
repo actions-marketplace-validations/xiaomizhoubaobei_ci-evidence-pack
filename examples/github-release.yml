@@ -1,12 +1,12 @@
 # 发版即取证（GitHub 版）：打 tag → 构建 → 生成并签名证据包 → 自检 → 挂到 Release。
 #
-# 照抄到 .github/workflows/ 就能跑。需要你改的只有两处：
-#   1. 「构建」步骤里的产物路径（并同步改 include 里对应那一行）
-#   2. 三个 secret（可选）：COSIGN_KEY_B64 / COSIGN_PUBLIC_KEY_B64 / COSIGN_PASSWORD
+# 照抄到 .github/workflows/ 就能跑。需要你改的只有一处：
+#   「构建」步骤里的产物路径（并同步改 include 里对应那一行）
 #
-# 没配密钥也照样绿：走默认的 keyless（身份来自 OIDC，锁的是一张 10 分钟就过期的
-# 短期证书，没有任何长期密钥需要保管）。但请记住——
-# sha256 被写进 Release 正文，才让这份包成为证据；包里那份 manifest 只证明自洽。
+# 不需要任何密钥：签名的身份来自 OIDC，锁的是一张 10 分钟就过期的短期证书，
+# 没有任何长期私钥要保管 —— 也就没有「私钥泄露 = 永久被冒充」这回事。
+# 但请记住——sha256 被写进 Release 正文，才让这份包成为证据；
+# 包里那份 manifest 只证明自洽。
 name: release
 
 on:
@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write   # 发 Release 需要
-      id-token: write   # keyless 签名需要；用 key 模式时它用不上，留着无害
+      id-token: write   # 签名的信任根：没有它就拿不到短期证书
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,34 +37,6 @@ jobs:
           python -m build --wheel --outdir dist
       # ↑↑↑ 上面是唯一需要你改的地方 ↑↑↑
 
-      # cosign 的密钥是**文件**不是字符串。用 base64 存：PEM 的换行过一遍 YAML
-      # 容易被吃掉，而「少了换行的私钥」只会回你一句看不懂的解析错误。
-      #
-      # 判定是「配了才切 key 模式」，不是「没配就不签」：默认走 keyless，
-      # 那才是这个 job 已经开好 id-token: write 的用意。
-      - name: 准备 cosign 密钥（配了才切 key 模式）
-        id: cosign
-        env:
-          COSIGN_KEY_B64: ${{ secrets.COSIGN_KEY_B64 }}
-          COSIGN_PUBLIC_KEY_B64: ${{ secrets.COSIGN_PUBLIC_KEY_B64 }}
-        run: |
-          set -euo pipefail
-          if [ -z "${COSIGN_KEY_B64:-}" ]; then
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::未配置 COSIGN_KEY_B64，改用默认的 keyless 签名（需要 id-token: write）"
-            exit 0
-          fi
-          # 半配置比不配更危险：签得出、验不了，等于把一把没有锁孔的钥匙挂出去。
-          if [ -z "${COSIGN_PUBLIC_KEY_B64:-}" ]; then
-            echo "::error::配了 COSIGN_KEY_B64 却没有 COSIGN_PUBLIC_KEY_B64：签得出、验不了，请成对配置"
-            exit 1
-          fi
-          umask 077
-          mkdir -p _keys
-          printf '%s' "$COSIGN_KEY_B64"        | base64 -d > _keys/cosign.key
-          printf '%s' "$COSIGN_PUBLIC_KEY_B64" | base64 -d > _keys/cosign.pub
-          echo "configured=true" >> "$GITHUB_OUTPUT"
-
       - name: 生成证据包并自检
         id: evidence
         uses: XMZZUZHI/Github/ci-evidence-pack@main
@@ -75,17 +47,10 @@ jobs:
           sbom: auto
           # 包外台账：sha256 落到 _evidence/anchor.txt，随 artifact 一起上传
           anchor-file: _evidence/anchor.txt
+          # 签名是默认动作，不给 sign 就是签：OIDC 换短期证书，没有别的分支。
           # 小写 'false' 才是关；空串 = 没给 = 沿用默认（默认签名）。
-          # 别直接传 ${{ steps.cosign.outputs.configured }}：布尔 false 渲染出来是
-          # 'False'（大写 F），既不等于 'false' 也不等于 'true'，开关会静默失效。
-          sign: ${{ steps.cosign.outputs.configured == 'true' && 'false' || '' }}
-          # 注意签名用私钥、验签用公钥，拿私钥去验是安全上的错
-          cosign-key: ${{ steps.cosign.outputs.configured == 'true' && '_keys/cosign.key' || '' }}
-          cosign-public-key: ${{ steps.cosign.outputs.configured == 'true' && '_keys/cosign.pub' || '' }}
           # 包内记了 remote 就核对；没记（actions/checkout 默认没有）只留告警不判红
           expect-repo: ${{ github.repository }}
-        env:
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
 
       # 白名单校验：证据包里只允许出现你打算交付的东西。
       # 开发资产（.git/ tests/ AGENTS.md install_gpg_keys.sh 等）一旦混进去，
@@ -169,6 +134,3 @@ jobs:
           } >> body.md
           gh release edit "${GITHUB_REF_NAME}" --notes-file body.md
 
-      - name: 清掉临时密钥
-        if: always()
-        run: rm -rf _keys

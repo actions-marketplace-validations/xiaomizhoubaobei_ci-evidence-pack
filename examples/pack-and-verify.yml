@@ -9,7 +9,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write   # 下面显式开了 keyless 签名，没有它换不到 OIDC token
+  id-token: write   # 签名身份唯一来源：没有它换不到 OIDC token
 
 jobs:
   evidence:
@@ -31,11 +31,11 @@ jobs:
             dist/
             configs/
           sbom: auto
-          sign: 'true'   # keyless：身份来自 OIDC 短期证书，没有任何长期密钥
+          sign: 'true'   # 身份来自 OIDC 短期证书，没有任何长期密钥
           # 无签名时的信任根：把 sha256 留在包外
           anchor-file: _evidence/anchor.txt
           expect-repo: ${{ github.repository }}
-          # 默认签名（keyless），身份由本次触发的 ref 决定：tag 上就是 @refs/tags/...
+          # 身份由本次触发的 ref 决定：tag 上就是 @refs/tags/...
           # 写死 ref 会让「换个 ref 跑」变成一次事故，而它本不该是个事故。
           identity: https://github.com/${{ github.repository }}/.github/workflows/pack-and-verify.yml@${{ github.ref }}
 

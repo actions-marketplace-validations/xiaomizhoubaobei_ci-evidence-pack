@@ -20,8 +20,7 @@ fi
 ARGS=(verify "$BUNDLE" --exit-code --json)
 
 [ -n "${INPUT_SIGNATURE_BUNDLE:-}" ]  && ARGS+=(--signature-bundle "$INPUT_SIGNATURE_BUNDLE")
-# 验签用的是公钥。拿私钥来验是安全上的错，也验不过 —— 这里不做任何「兼容」。
-[ -n "${INPUT_COSIGN_PUBLIC_KEY:-}" ] && ARGS+=(--verify-key "$INPUT_COSIGN_PUBLIC_KEY")
+# 验签只认短期证书里的身份：identity + issuer 给不出来就等于「接受任何人的签名」。
 [ -n "${INPUT_IDENTITY:-}" ]          && ARGS+=(--identity "$INPUT_IDENTITY")
 [ -n "${INPUT_ISSUER:-}" ]            && ARGS+=(--issuer "$INPUT_ISSUER")
 [ -n "${INPUT_EXPECT_SHA256:-}" ]     && ARGS+=(--expect-sha256 "$INPUT_EXPECT_SHA256")

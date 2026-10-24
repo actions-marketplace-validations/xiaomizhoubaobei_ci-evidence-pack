@@ -1,10 +1,16 @@
-import json
-import os
-import subprocess
-import shutil
-import stat
+"""签名层的本地契约：不用真 Fulcio，也不碰私钥。
+
+私钥那条路已经从入口里删干净了，所以这里的每个用例都靠「假 cosign + 亲手捏的
+bundle」来钉住判定逻辑：bundle 必须真的绑在这份字节上、退出码 0 不算数、
+密码学层面的细节交给 test_keyless_oidc.py 里的证书窗口用例。
+"""
+
 import base64
 import hashlib
+import json
+import os
+import shutil
+import stat
 from pathlib import Path
 
 import pytest
@@ -12,57 +18,89 @@ import pytest
 from evidence_pack.errors import EvidenceInvalid, ToolFailure, UsageError
 from evidence_pack.signing import sign, verify
 
-pytestmark = pytest.mark.skipif(shutil.which("cosign") is None, reason="需要 cosign v3+")
+pytestmark = pytest.mark.skipif(
+    shutil.which("sh") is None or os.name != "posix", reason="需要 POSIX shell 造假的 cosign"
+)
+
+IDENTITY = "https://github.com/org/repo/.github/workflows/ci.yml@refs/heads/main"
+ISSUER = "https://token.actions.githubusercontent.com"
+TOKEN = "a" * 120 + "." + base64.urlsafe_b64encode(
+    json.dumps({"sub": IDENTITY, "iss": ISSUER}).encode()
+).decode().rstrip("=") + "." + "c" * 60
+
+BLOB = b"evidence"
 
 
-PASSWORD = "test-only"
+def _fake_cosign(tmp_path: Path, body: str) -> Path:
+    fake = tmp_path / "bin"
+    fake.mkdir(exist_ok=True)
+    script = fake / "cosign"
+    script.write_text("#!/bin/sh\n" + body)
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    return fake
+
+
+def _bundle(digest_of: bytes = BLOB, *, cert: bool = True, tlog: bool = True) -> str:
+    material: dict = {}
+    if cert:
+        material["x509CertificateChain"] = {"certificates": [{"rawBytes": ""}]}
+    if tlog:
+        material["tlogEntries"] = [{"integratedTime": "1700000000"}]
+    return json.dumps({
+        "messageSignature": {
+            "messageDigest": {
+                "algorithm": "SHA2_256",
+                "digest": base64.b64encode(hashlib.sha256(digest_of).digest()).decode(),
+            }
+        },
+        "verificationMaterial": material,
+    })
 
 
 @pytest.fixture
-def signed(tmp_path):
-    key_prefix = tmp_path / "k"
-    env = dict(os.environ, COSIGN_PASSWORD=PASSWORD)
-    proc = subprocess.run(
-        ["cosign", "generate-key-pair", "--output-key-prefix", str(key_prefix)],
-        capture_output=True, text=True, check=False, env=env, stdin=subprocess.DEVNULL,
-    )
-    assert proc.returncode == 0, proc.stderr
-    blob = tmp_path / "blob.bin"
-    blob.write_bytes(b"evidence")
+def blob(tmp_path: Path) -> Path:
+    path = tmp_path / "blob.bin"
+    path.write_bytes(BLOB)
+    return path
+
+
+@pytest.fixture
+def signed(tmp_path: Path, blob: Path, monkeypatch) -> tuple[Path, Path]:
+    """用假 cosign 签出一份结构合法的 bundle：有证书链、有 tlog。"""
     bundle = tmp_path / "blob.sigstore.json"
-    sign(blob, bundle, key=str(key_prefix) + ".key", password=PASSWORD)
-    return blob, bundle, str(key_prefix) + ".pub"
+    fake = _fake_cosign(
+        tmp_path,
+        f'cat > "{bundle}" <<\'BUNDLE\'\n{_bundle()}\nBUNDLE\nexit 0\n',
+    )
+    monkeypatch.setenv("PATH", f"{fake}:{os.environ['PATH']}")
+    sign(blob, bundle, oidc_token=TOKEN)
+    return blob, bundle
 
 
-def test_sign_emits_only_sigstore_bundle(tmp_path, signed):
-    _blob, bundle, _pub = signed
+def test_sign_emits_only_sigstore_bundle(signed):
+    _blob, bundle = signed
     assert bundle.is_file()
     assert not bundle.with_suffix(".sig").exists()
     assert not Path(str(bundle) + ".crt").exists()
 
 
-def test_verify_good(signed):
-    blob, bundle, pub = signed
-    result = verify(blob, bundle, verify_key=pub, password=PASSWORD)
-    assert result.verified and result.mode == "key"
-    # cosign v3 的 key 模式 bundle 默认也带 tlog，这里不预设有没有；
-    # 只要求「报的和你查的一致」—— 没查过的不许报 true。
-    bundle_data = json.loads(bundle.read_text())
-    assert result.tlog_checked is bool(
-        (bundle_data.get("verificationMaterial") or {}).get("tlogEntries")
-    )
+def test_sign_requires_oidc_token(blob, tmp_path):
+    """没有 token 就没有证书，也就没有身份 —— 当场判 1，不甩给 cosign。"""
+    with pytest.raises(UsageError, match="OIDC token"):
+        sign(blob, tmp_path / "b.sigstore.json")
 
 
-def test_verify_tampered_blob_is_evidence_invalid(signed, tmp_path):
-    _blob, bundle, pub = signed
-    tampered = tmp_path / "tampered.bin"
-    tampered.write_bytes(b"evidence+evil")
-    with pytest.raises(EvidenceInvalid):
-        verify(tampered, bundle, verify_key=pub, password=PASSWORD)
+def test_verify_good(signed, monkeypatch):
+    blob, bundle = signed
+    _fake_cosign(Path(bundle.parent), 'echo "Verified OK"\nexit 0\n')
+    result = verify(blob, bundle, identity=IDENTITY, issuer=ISSUER)
+    assert result.verified and result.mode == "keyless"
+    assert result.tlog_checked is True
 
 
-def test_keyless_without_identity_is_rejected_locally(signed, monkeypatch):
-    blob, bundle, _pub = signed
+def test_verify_without_identity_is_rejected_locally(signed, monkeypatch):
+    """给不出期望身份 = 接受任何人的签名，那不是验证。"""
+    blob, bundle = signed
     called = []
     real_run = __import__("subprocess").run
 
@@ -71,68 +109,69 @@ def test_keyless_without_identity_is_rejected_locally(signed, monkeypatch):
         return real_run(*args, **kwargs)
 
     monkeypatch.setattr("subprocess.run", spy)
-    with pytest.raises(UsageError, match="keyless"):
+    with pytest.raises(UsageError, match="identity"):
         verify(blob, bundle)
     assert called == [], "identity 缺失时不该真的去调 cosign"
 
 
-def test_key_and_identity_are_mutually_exclusive(signed):
-    blob, bundle, pub = signed
-    with pytest.raises(UsageError, match="互相排斥"):
-        verify(blob, bundle, verify_key=pub, identity="a", issuer="b")
+def test_verify_key_is_gone_from_the_interface():
+    """验签那侧也只剩短期证书一种身份：入口上不该还有 verify_key。"""
+    import inspect
+
+    assert "verify_key" not in inspect.signature(verify).parameters
+
+
+def test_verify_tampered_blob_is_evidence_invalid(signed, tmp_path, monkeypatch):
+    blob, bundle = signed
+    _fake_cosign(tmp_path, 'echo "Verified OK"\nexit 0\n')
+    tampered = tmp_path / "tampered.bin"
+    tampered.write_bytes(b"evidence+evil")
+    with pytest.raises(EvidenceInvalid, match="摘要"):
+        verify(tampered, bundle, identity=IDENTITY, issuer=ISSUER)
 
 
 def test_fake_cosign_exit_zero_but_no_output_is_tool_failure(signed, tmp_path, monkeypatch):
-    blob, bundle, pub = signed
-    fake = tmp_path / "bin"
-    fake.mkdir()
-    script = fake / "cosign"
-    script.write_text("#!/bin/sh\nexit 0\n")
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
-    monkeypatch.setenv("PATH", f"{fake}:{os.environ['PATH']}")
+    blob, bundle = signed
+    _fake_cosign(tmp_path, "exit 0\n")
     with pytest.raises(ToolFailure, match="Verified OK"):
-        verify(blob, bundle, verify_key=pub)
+        verify(blob, bundle, identity=IDENTITY, issuer=ISSUER)
 
 
 def test_fake_cosign_cannot_vouch_for_tampered_blob(signed, tmp_path, monkeypatch):
-    _blob, bundle, pub = signed
+    _blob, bundle = signed
     tampered = tmp_path / "t.bin"
     tampered.write_bytes(b"nope")
-    fake = tmp_path / "bin"
-    fake.mkdir()
-    script = fake / "cosign"
-    script.write_text("#!/bin/sh\necho 'Verified OK'\nexit 0\n")
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
-    monkeypatch.setenv("PATH", f"{fake}:{os.environ['PATH']}")
+    _fake_cosign(tmp_path, 'echo "Verified OK"\nexit 0\n')
     with pytest.raises(EvidenceInvalid, match="摘要"):
-        verify(tampered, bundle, verify_key=pub, password=PASSWORD)
+        verify(tampered, bundle, identity=IDENTITY, issuer=ISSUER)
 
 
-def test_bundle_digest_must_bind_the_blob(tmp_path, signed):
-    _blob, bundle, pub = signed
+def test_bundle_digest_must_bind_the_blob(tmp_path, blob, signed):
+    _b, bundle = signed
     data = json.loads(bundle.read_text())
     data["messageSignature"]["messageDigest"]["digest"] = base64.b64encode(
         hashlib.sha256(b"something else").digest()
     ).decode()
     forged = tmp_path / "forged.sigstore.json"
     forged.write_text(json.dumps(data))
-    blob = tmp_path / "blob.bin"
-    blob.write_bytes(b"evidence")
+    _fake_cosign(tmp_path, 'echo "Verified OK"\nexit 0\n')
     with pytest.raises(EvidenceInvalid):
-        verify(blob, forged, verify_key=pub, password=PASSWORD)
+        verify(blob, forged, identity=IDENTITY, issuer=ISSUER)
 
 
-def test_garbage_bundle_is_tool_failure(tmp_path, signed):
-    blob, _bundle, pub = signed
+def test_garbage_bundle_is_tool_failure(tmp_path, blob, monkeypatch):
+    _fake_cosign(tmp_path, 'echo "Verified OK"\nexit 0\n')
     junk = tmp_path / "junk.sigstore.json"
     junk.write_text("{not json")
     with pytest.raises(ToolFailure):
-        verify(blob, junk, verify_key=pub, password=PASSWORD)
+        verify(blob, junk, identity=IDENTITY, issuer=ISSUER)
 
 
-def test_passing_the_private_key_as_verify_key_fails(signed):
-    """签名用私钥、验签用公钥。把私钥塞进 verify_key 不该「也能凑合验过」。"""
-    blob, bundle, _pub = signed
-    private_key = str(bundle.parent / "k.key")
-    with pytest.raises((EvidenceInvalid, ToolFailure)):
-        verify(blob, bundle, verify_key=private_key, password=PASSWORD)
+def test_bundle_without_tlog_is_invalid_even_if_cosign_says_ok(tmp_path, blob, monkeypatch):
+    """cosign 说 OK 也不够：keyless 的 bundle 必须有 tlog 落点。"""
+    bundle = tmp_path / "b.sigstore.json"
+    bundle.write_text(_bundle(tlog=False))
+    fake = _fake_cosign(tmp_path, 'echo "Verified OK"\nexit 0\n')
+    monkeypatch.setenv("PATH", f"{fake}:{os.environ['PATH']}")
+    with pytest.raises(EvidenceInvalid, match="tlogEntries"):
+        verify(blob, bundle, identity=IDENTITY, issuer=ISSUER)

@@ -1,4 +1,4 @@
-"""keyless = OIDC 换 Fulcio 短期证书。
+"""签名 = OIDC 换 Fulcio 短期证书（唯一的签法）。
 
 这里不连真 Fulcio（测试不该依赖外网和真实身份），而是把 cosign 换成假程序，
 钉死三件必须在**本地**就定下来的事：
@@ -84,21 +84,25 @@ def test_two_token_sources_is_usage_error(monkeypatch):
         resolve_oidc_token(TOKEN, "SIGSTORE_TEST_TOKEN")
 
 
-def test_key_and_token_are_mutually_exclusive(tmp_path):
+def test_sign_has_no_private_key_path(tmp_path):
+    """私钥那条路已整条移除：入口上根本没有 `key` 参数，也就无从 fallback。"""
+    import inspect
+
+    assert "key" not in inspect.signature(sign).parameters
     blob = tmp_path / "b.bin"
     blob.write_bytes(b"x")
-    with pytest.raises(UsageError, match="互相排斥"):
-        sign(blob, tmp_path / "b.json", key="k.key", oidc_token=TOKEN)
+    with pytest.raises(TypeError):
+        sign(blob, tmp_path / "b.json", key=str(tmp_path / "k.key"))  # type: ignore[call-arg]
 
 
-def test_keyless_without_token_is_usage_error(tmp_path):
+def test_sign_without_token_is_usage_error(tmp_path):
     blob = tmp_path / "b.bin"
     blob.write_bytes(b"x")
     with pytest.raises(UsageError, match="OIDC token"):
         sign(blob, tmp_path / "b.json")
 
 
-def test_keyless_sign_passes_token_via_env_not_argv(tmp_path, monkeypatch):
+def test_sign_passes_token_via_env_not_argv(tmp_path, monkeypatch):
     """token 只准走环境变量。argv 会被 ps / 作业日志看个遍。"""
     blob = tmp_path / "b.bin"
     blob.write_bytes(b"x")
@@ -130,7 +134,7 @@ def test_keyless_sign_passes_token_via_env_not_argv(tmp_path, monkeypatch):
     assert "--fulcio-url" not in captured_argv or "sigstore.dev" in captured_argv
 
 
-def test_keyless_bundle_without_cert_chain_is_tool_failure(tmp_path, monkeypatch):
+def test_bundle_without_cert_chain_is_tool_failure(tmp_path, monkeypatch):
     blob = tmp_path / "b.bin"
     blob.write_bytes(b"x")
     bundle = tmp_path / "b.sigstore.json"
@@ -143,7 +147,7 @@ def test_keyless_bundle_without_cert_chain_is_tool_failure(tmp_path, monkeypatch
         sign(blob, bundle, oidc_token=TOKEN)
 
 
-def test_keyless_bundle_without_tlog_is_tool_failure(tmp_path, monkeypatch):
+def test_bundle_without_tlog_is_tool_failure(tmp_path, monkeypatch):
     blob = tmp_path / "b.bin"
     blob.write_bytes(b"x")
     bundle = tmp_path / "b.sigstore.json"

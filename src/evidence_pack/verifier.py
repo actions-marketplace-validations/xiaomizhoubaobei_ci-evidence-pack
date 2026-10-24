@@ -37,7 +37,6 @@ class VerifyOptions:
 
     bundle_path: Path
     signature_bundle: Path | None = None
-    verify_key: str | None = None
     identity: str | None = None
     issuer: str | None = None
     ignore_tlog: bool = False
@@ -236,7 +235,6 @@ def _verify_once(opts: VerifyOptions) -> VerifyResult:
             result.signature = verify_signature(
                 bundle_path,
                 opts.signature_bundle,
-                verify_key=opts.verify_key,
                 identity=opts.identity,
                 issuer=opts.issuer,
                 ignore_tlog=opts.ignore_tlog,

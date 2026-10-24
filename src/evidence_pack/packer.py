@@ -232,10 +232,12 @@ def pack(opts: PackOptions) -> PackResult:
         bundle_sha = sha256_bytes(payload)
 
     sig = SignatureResult()
-    # 两条触发路径任一成立即签：--sign 显式要求，或给了 OIDC token。
-    # identity/issuer 是"验签时"的期望值，签名时并不需要——把它们当签名开关
-    # 是原实现的坑，所以这里只认 sign / oidc_token。
-    if opts.sign or opts.oidc_token:
+    # 签名开关只有 sign 一个：--sign / 默认值。identity、issuer、oidc_token
+    # 都不是开关——它们是「用什么身份签」「拿什么去换证书」。
+    # 曾经这里写成 `opts.sign or opts.oidc_token`，结果是「关了签名、但环境里
+    # 有个 token」会静默签上，与 README 写的「只有一种签法」对不上号。
+    # 参数自相矛盾（不签 + 给了 token / 期望身份）在 CLI 层就判 1，走不到这里。
+    if opts.sign:
         bundle_file = out_dir / bundle_name
         sig = sign_bundle(
             bundle_file,

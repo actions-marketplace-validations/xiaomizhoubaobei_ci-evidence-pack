@@ -83,7 +83,11 @@ inputs:
     description: |
       包外锚点：期望的 bundle sha256。留空则用本步骤刚打出的包自身摘要 ——
       那是「自己给自己发证」，只够证明产物没在步骤之间被动过；
-      真正的包外锚点请从你登记它的地方（制品库 / 审计库）回送
+      真正的包外锚点请从你登记它的地方（制品库 / 审计库）回送。
+
+      注意：签名默认开启后，「自检通过」的信息量已经接近于零 ——
+      验的是本 job 刚算出来的那份摘要，不是包外的那本账。
+      要看信任根，看的是签名身份（identity），或 anchor-file / Release 正文里的 sha256
     required: false
     default: ''
 
@@ -184,10 +188,14 @@ runs:
           exit 1
         }
 
-    # 只在真要签名时装。判据与 scripts/action-pack.sh 保持一致：
-    # 小写 'false' 才算关，空串 / 其它值一律按默认（签名）处理。
+    # 只在真要签名时装。判据必须与 scripts/action-pack.sh 逐字一致：
+    # 小写 'false' 才算关，空串 / 'yes' / '1' / 'True' 一律按默认（签名）处理。
+    #
+    # 这里曾经写成 `inputs.sign == 'true'`，于是调用方显式传 'yes' / '1'
+    # 时 installer 不跑，而打包脚本照签不误 —— 一路走到内核才发现没有 cosign，
+    # 判成 3。两个脚本的判据分叉时，症状出现在离原因最远的地方。
     - name: 安装 cosign
-      if: inputs.sign == 'true'
+      if: inputs.sign != 'false'
       uses: sigstore/cosign-installer@v3
 
     # 为什么要在 Action 里替用户装扫描器：`sbom: auto` 认出一个 Python 项目后，
@@ -280,6 +288,10 @@ runs:
         # 与打包步骤同源：验签要用的期望身份就是打包时写进 binding.json 的那个。
         INPUT_IDENTITY: ${{ inputs.identity || format('https://github.com/{0}/{1}@{2}', github.repository, github.workflow_ref, github.ref_name) }}
         INPUT_ISSUER: ${{ inputs.issuer }}
+        # 调用方没给 expect-sha256 时，这里回送的是**本次 job 刚算出的**摘要。
+        # 那不是包外锚点，是「自己给自己发证」：它只能证明产物在步骤之间没被动过。
+        # 真正的信任根是签名身份，或者你登记到包外（anchor-file / Release 正文）的 sha256。
+        # 别把 verify-ok=true 读成「这份包来自我以为的那个人」。
         INPUT_EXPECT_SHA256: ${{ inputs.expect-sha256 || steps.pack.outputs.bundle-sha256 }}
         INPUT_EXPECT_REPO: ${{ inputs.expect-repo || github.repository }}
       run: |

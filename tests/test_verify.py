@@ -123,6 +123,9 @@ def _packed_with_remote(tmp_path: Path, monkeypatch, remote: str) -> Path:
         ["init", "-q"],
         ["config", "user.email", "t@example.com"],
         ["config", "user.name", "t"],
+        # 夹具造的仓库没有签名私钥；本仓库 / 开发镜像常全局开着 commit.gpgsign，
+        # 不关掉就会在 git commit 里撞上 "gpg failed to sign the data"。
+        ["config", "commit.gpgsign", "false"],
         ["add", "-A"],
         ["commit", "-qm", "init"],
         ["remote", "add", "origin", remote],

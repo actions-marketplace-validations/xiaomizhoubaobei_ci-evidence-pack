@@ -33,8 +33,12 @@ def _repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
     subprocess.run(
+        # commit.gpgsign=false 是必须的：AGENTS.md 要求提交签名，开发机 / 镜像里
+        # 常常全局开了 commit.gpgsign，夹具用临时身份造的仓库没有对应私钥，
+        # 一提交就 gpg failed to sign the data —— 那不是被测代码的问题，
+        # 却会让每个人的本地跑出一片红。
         ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
-         "commit", "-qm", "init"],
+         "-c", "commit.gpgsign=false", "commit", "-qm", "init"],
         check=True,
     )
     return repo
@@ -544,14 +548,31 @@ def _fake_oidc_server(tmp_path: Path, *, ok: bool = True) -> tuple[subprocess.Po
 _OIDC_TOKEN = "h." + "e" * 60 + "." + "s" * 60
 
 
-def _fake_cosign(tmp_path: Path) -> Path:
-    """假 cosign：sign-blob 时把 SIGSTORE_ID_TOKEN 抄进 bundle，便于断言。"""
+def _fake_cosign(tmp_path: Path, *, verify_ok: bool = True) -> Path:
+    """假 cosign：sign-blob 时把 SIGSTORE_ID_TOKEN 抄进 bundle，便于断言。
+
+    `verify_ok=False` 时 verify-blob 以非零退出，用来模拟「identity 不符 /
+    签名无效」—— 那在 Action 层必须是 2，不能与「工具坏了」的 3 混在一起。
+    """
     fake = tmp_path / "fakebin"
     fake.mkdir(exist_ok=True)
     script = fake / "cosign"
+    verify_body = (
+        "# 状态随目录走：同一个 fakebin 既能签也能验。\n"
+        '[ -f "$(dirname "$0")/verify-ok" ] && NPC_VERIFY_OK="$(cat "$(dirname "$0")/verify-ok")"\n'
+        "if [ \"$1\" = \"verify-blob\" ]; then\n"
+        "  if [ \"$NPC_VERIFY_OK\" = \"0\" ]; then\n"
+        "    echo 'Error: verifying signature: signature does not match' >&2\n"
+        "    exit 1\n"
+        "  fi\n"
+        "  echo 'Verified OK'\n"
+        "  exit 0\n"
+        "fi\n"
+    )
     script.write_text(
         "#!/bin/sh\n"
-        "# 只实现 sign-blob：把收到的 token 原样写进 bundle 的 metadata 里。\n"
+        "# 只实现 sign-blob / verify-blob：前者把收到的 token 原样写进 bundle。\n"
+        + verify_body +
         'out=""\n'
         'prev=""\n'
         "for a in \"$@\"; do\n"
@@ -568,6 +589,7 @@ def _fake_cosign(tmp_path: Path) -> Path:
         "exit 0\n"
     )
     script.chmod(0o755)
+    (fake / "verify-ok").write_text("1" if verify_ok else "0", encoding="utf-8")
     return fake
 
 
@@ -753,3 +775,113 @@ def test_examples_do_not_manage_private_keys(path):
     for banned in ("COSIGN_KEY_B64", "COSIGN_PUBLIC_KEY_B64", "COSIGN_PASSWORD",
                    "cosign-key", "cosign-public-key"):
         assert banned not in text, f"{path.name} 仍在示范私钥方案：{banned}"
+
+
+# ---------------------------------------------------------------------------
+# 默认签名之后最容易咬人的两处：装 cosign 的判据，以及「自检在签什么」。
+# 前者两个脚本判据分叉时症状出现在离原因最远的地方（装没装 → 内核报 3）；
+# 后者在签名默认开后，自检必过 0，那条结论的信息量接近于零。
+# ---------------------------------------------------------------------------
+
+def test_cosign_installer_runs_for_every_value_that_means_sign():
+    """判据必须与 action-pack.sh 逐字一致：只有小写 'false' 才不装。
+
+    曾经写成 `inputs.sign == 'true'`：调用方显式传 'yes' / '1' 时 installer 不跑，
+    而打包脚本照签不误（它判的是 != 'false'），最后在内核里报「找不到 cosign」判 3。
+    这条用例就是钉子 —— 两个脚本的判据一旦分叉，这里会立刻红。
+    """
+    steps = _manifest()["runs"]["steps"]
+    installer = next(s for s in steps if "cosign-installer" in str(s.get("uses", "")))
+    assert installer["if"] == "inputs.sign != 'false'"
+
+    script = (SCRIPTS / "action-pack.sh").read_text(encoding="utf-8")
+    # shell 层的判据：同样是「只有 'false' 才是关」，用 default 兜空串。
+    assert '[ "${INPUT_SIGN:-true}" = "false" ]' in script
+
+
+def test_sign_off_literal_is_shared_by_action_and_kernel():
+    """"哪种写法算关"只许有一个答案：内核、shell、action.yml 说的是同一句话。"""
+    from evidence_pack.signing import SIGN_OFF_LITERAL, is_sign_off
+
+    assert SIGN_OFF_LITERAL == "false"
+    # 留空 = 没给 = 沿用默认（签名），不是「关」。
+    assert is_sign_off("") is False and is_sign_off(None) is False
+    # 大写的 False 渲染值不算关：悄悄当成「不签」比报错危险得多。
+    assert is_sign_off("False") is False and is_sign_off("0") is False
+    # 两边都只认这一个字面量。
+    assert _manifest()["inputs"]["sign"]["default"] == "true"
+    assert SIGN_OFF_LITERAL in (SCRIPTS / "action-pack.sh").read_text(encoding="utf-8")
+
+
+def test_verify_step_does_not_pretend_the_self_digest_is_an_anchor():
+    """自检回送本 job 刚算的摘要时要留下说明，别让它看起来像包外锚点。
+
+    签名默认开后这条路必过 0：验的是「刚打出来的东西」，不是「包外那份账」。
+    说明消失的那天，verify-ok 就会被当成「包来自我以为的那个人」。
+    """
+    steps = {s.get("id"): s for s in _manifest()["runs"]["steps"] if s.get("id")}
+    env = steps["verify"]["env"]
+    assert "steps.pack.outputs.bundle-sha256" in env["INPUT_EXPECT_SHA256"]
+    text = (SCRIPTS / "action-pack.sh").read_text(encoding="utf-8")
+    assert "自己给自己发证" in text or "包外那份账" in text
+
+    # action.yml 的输入说明里也得写清楚这件事。
+    desc = _manifest()["inputs"]["expect-sha256"]["description"]
+    assert "自己给自己发证" in desc
+
+
+def test_signed_verify_is_2_when_identity_does_not_match(workspace, tmp_path):
+    """签名 invalid / identity 不符 → 2（证据无效），不是 3（工具坏了）。
+
+    Action 层此前没有这条用例：签名的成败只靠 test_signing.py 的内核单测兜，
+    而 verify 那一步在签名默认开启后成了每次必跑的路径。
+    """
+    fake = _fake_cosign(tmp_path, verify_ok=False)
+    env = _action_env(workspace, INPUT_SIGN="true")
+    env["SIGSTORE_ID_TOKEN"] = _OIDC_TOKEN
+    env.pop("ACTIONS_ID_TOKEN_REQUEST_URL", None)
+    env["PATH"] = f"{fake}{os.pathsep}{env['PATH']}"
+    assert _call("action-pack.sh", env, cwd=workspace).returncode == 0, "打包本身该成功"
+    out = _gh_outputs(workspace.parent / "gh-output.txt")
+
+    verify_env = _action_env(
+        workspace,
+        INPUT_BUNDLE=out["bundle-path"],
+        INPUT_SIGNATURE_BUNDLE=out["signature-bundle"],
+        INPUT_IDENTITY="https://github.com/acme/app/.github/workflows/ci.yml@refs/heads/main",
+        INPUT_ISSUER="https://token.actions.githubusercontent.com",
+        INPUT_EXPECT_SHA256=out["bundle-sha256"],
+    )
+    verify_env["PATH"] = f"{fake}{os.pathsep}{verify_env['PATH']}"
+    proc = _call("action-verify.sh", verify_env, cwd=workspace)
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    verified = _gh_outputs(workspace.parent / "gh-output.txt")
+    assert verified["ok"] == "false" and verified["exit-code"] == "2"
+    assert verified["signature-verified"] == "false"
+
+
+def test_signed_verify_is_3_when_cosign_went_missing(workspace, tmp_path):
+    """打包时有 cosign、验签时没有 → 3（工具坏了），不是「签名无效」。
+
+    这两者的人工处置完全不同：一个是去修 runner，一个是去查谁动过包。
+    """
+    fake = _fake_cosign(tmp_path)
+    env = _action_env(workspace, INPUT_SIGN="true")
+    env["SIGSTORE_ID_TOKEN"] = _OIDC_TOKEN
+    env.pop("ACTIONS_ID_TOKEN_REQUEST_URL", None)
+    env["PATH"] = f"{fake}{os.pathsep}{env['PATH']}"
+    assert _call("action-pack.sh", env, cwd=workspace).returncode == 0
+    out = _gh_outputs(workspace.parent / "gh-output.txt")
+
+    verify_env = _action_env(
+        workspace,
+        INPUT_BUNDLE=out["bundle-path"],
+        INPUT_SIGNATURE_BUNDLE=out["signature-bundle"],
+        INPUT_IDENTITY="https://github.com/acme/app/.github/workflows/ci.yml@refs/heads/main",
+        INPUT_ISSUER="https://token.actions.githubusercontent.com",
+        INPUT_EXPECT_SHA256=out["bundle-sha256"],
+        PATH="/usr/bin:/bin",   # 这里没有 cosign
+    )
+    proc = _call("action-verify.sh", verify_env, cwd=workspace)
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert "cosign" in proc.stdout + proc.stderr

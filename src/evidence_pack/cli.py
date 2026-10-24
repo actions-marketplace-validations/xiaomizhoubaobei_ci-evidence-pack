@@ -22,6 +22,7 @@ from .errors import (
     EXIT_TOOL_FAILURE,
     EXIT_USAGE,
     EvidenceError,
+    UsageError,
 )
 from .packer import PackOptions, pack as run_pack
 from .signing import DEFAULT_FULCIO_URL, DEFAULT_REKOR_URL, resolve_oidc_token
@@ -52,6 +53,30 @@ def _fail(exc: EvidenceError, *, as_json: bool) -> None:
     else:
         typer.echo(f"error: {exc}", err=True)
     raise typer.Exit(code=exc.exit_code)
+
+
+def _reject_contradictions(
+    *, sign: bool, token: str | None, identity: str | None, issuer: str | None
+) -> None:
+    """参数之间自相矛盾时，先判 1，别把话留到签名层去说。
+
+    `--no-sign` 配上 token 或期望身份，是「你让我别签，又给了我签名的料」。
+    以前这种调用会一路走到签名层，报出「签名必须有 OIDC token」——
+    那是回答了「怎么签」，而用户问的是「我这两个参数怎么打架了」。
+    用法错就该在用法层停住（1），与证据真伪无关。
+    """
+    if sign:
+        return
+    if token:
+        raise UsageError(
+            "--no-sign 与 --oidc-token/--oidc-token-env 冲突：给了 token 就是要签名，"
+            "要签名就去掉 --no-sign。"
+        )
+    if identity or issuer:
+        raise UsageError(
+            "--no-sign 与 --identity/--issuer 冲突：这两个参数是验签的期望身份，"
+            "不签名时它们无处落地。不签就靠包外 sha256 锚点当信任根。"
+        )
 
 
 @app.command()
@@ -85,6 +110,8 @@ def pack(
 ) -> None:
     """生成证据包并签名（默认用 cosign 签）。"""
     try:
+        token = resolve_oidc_token(oidc_token, oidc_token_env)
+        _reject_contradictions(sign=sign, token=token, identity=identity, issuer=issuer)
         result = run_pack(PackOptions(
             repo_root=repo,
             out_dir=out,
@@ -93,7 +120,7 @@ def pack(
             collect_git=collect_git,
             identity=identity,
             issuer=issuer,
-            oidc_token=resolve_oidc_token(oidc_token, oidc_token_env),
+            oidc_token=token,
             fulcio_url=fulcio_url,
             rekor_url=rekor_url,
             bundle_name=bundle_name,

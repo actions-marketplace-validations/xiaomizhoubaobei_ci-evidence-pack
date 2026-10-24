@@ -174,6 +174,21 @@ def _require_identity(identity: str | None, issuer: str | None) -> None:
         raise UsageError("必须同时提供 --identity 与 --issuer，否则等于接受任何人的签名。")
 
 
+# 判定「是不是 sign: false」只认这一个字面量。它同时被 Action 的 shell 层与内核用到：
+# 两处各写一遍，早晚会在某个值上分叉（'False' / '0' / 'no'），
+# 那时装好的 cosign 和要不要签名就成了两件事。
+SIGN_OFF_LITERAL = "false"
+
+
+def is_sign_off(value: str | None) -> bool:
+    """`sign` 的字符串形态是否表示「不签名」。
+
+    只认小写 'false'。留空 = 没给 = 沿用默认（默认签名）；
+    'False' / '0' / 'no' 一律按签名处理 —— 悄悄当成「不签」比报错危险得多。
+    """
+    return (value or "").strip() == SIGN_OFF_LITERAL
+
+
 def sign(blob: Path, bundle: Path, *, oidc_token: str | None = None,
          fulcio_url: str | None = None, rekor_url: str | None = None) -> SignatureResult:
     """用 OIDC 换来的短期证书对 blob 签名，产出 `.sigstore.json`。

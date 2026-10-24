@@ -108,12 +108,31 @@ permissions:
 顺带一句：OIDC token 有时效（GitHub 上是 job 级、短期），且只在 job 运行期间有效。
 拿它签完的包，验证时不依赖 token，只依赖包内的证书链 + `--identity` / `--issuer`。
 
+### 自检通过 ≠ 包外那份账对上了
+
+`verify` 步骤没拿到 `expect-sha256` 时，回送的是**本 job 上一步刚算出来的**摘要。
+签名默认开启之后，这条路必然走成 0 —— 它验的是「刚打出来的东西」，
+不是「包外登记过的那份账」。自托管 runner 上被引导去 `sign: 'false'` 的人反而没有这个问题：
+那条路上没有签名兜底，没锚点就如实判 2。
+
+所以请把 `verify-ok` 读成「产物在步骤之间没被动过」，别读成「这份包来自我以为的那个人」。
+真正的锚点是：
+
+- `anchor-file` 落下来的那行 sha256（再上传到制品库 / 审计库），或
+- Release 正文里写下的 sha256，或
+- 签名里的 `identity` —— 那才是「谁跑的这次构建」。
+
 ### 关于 `expect-repo`
 
 包内若记了 git remote，`expect-repo` 就据此核对，不符判 2；
 包内没有 remote 元数据（`actions/checkout` 检出的默认形态、以及剥离了 `.git`
 的构建上下文都是这样）时，**不判无效**，而是在 `anchor_warnings` 里说明
 「这条锚点没起作用」。缺元数据是采集环境的问题，不是篡改的证据。
+
+实话说清这个边界的后果：仓库没配 remote 时，`--expect-repo` **完全不生效** ——
+`anchor_warnings` 是空的，只有最终那句「无锚点」的错误里能看出它没起作用。
+要一条真能核对的锚点，用 `--expect-sha256`，别指望 `expect-repo`
+在没有 remote 的检出里替你兜底。
 
 ### 关于 SBOM
 

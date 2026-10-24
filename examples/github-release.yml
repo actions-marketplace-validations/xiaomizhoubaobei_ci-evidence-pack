@@ -49,13 +49,13 @@ jobs:
           anchor-file: _evidence/anchor.txt
           # 签名是默认动作，不给 sign 就是签：OIDC 换短期证书，没有别的分支。
           # 小写 'false' 才是关；空串 = 没给 = 沿用默认（默认签名）。
-          # 包内记了 remote 就核对；没记（actions/checkout 默认没有）只留告警不判红
+          # 包内记了 remote 就核对；没记（actions/checkout 默认没有）只留告警不判红。
           expect-repo: ${{ github.repository }}
 
       # 白名单校验：证据包里只允许出现你打算交付的东西。
       # 开发资产（.git/ tests/ AGENTS.md install_gpg_keys.sh 等）一旦混进去，
-      # 可能被铺到使用者的目录里，其中改写全局 git 配置的脚本若被误执行，
-      # 风险由使用者承担。
+      # 就可能被铺到使用者的目录里；其中改写全局 git 配置的脚本若被误执行，
+      # 后果由误把开发资产当交付物的那一方承担 —— 所以宁可在这里硬拒。
       #
       # 清单用 python 的 tarfile 读，而不是 `tar -tzf | awk`：后者遇到带空格的
       # 文件名会截断，白名单校验就变成漏判。

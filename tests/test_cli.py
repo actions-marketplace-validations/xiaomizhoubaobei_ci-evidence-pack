@@ -142,17 +142,48 @@ def test_verify_exit_code_mode_reports_success(tmp_path):
 def test_identity_is_binding_not_sign_request(tmp_path):
     """--identity/--issuer 只是写进包内的期望值，不是签名开关。
 
-    默认签名下没有 OIDC token 就该判用法错（1）—— 错因是缺 token，
-    不是「给了 identity 所以顺手签了」。这里用 --no-sign 钉住另一半：
-    期望身份存在，但调用方关掉了签名，产物就该是未签名。
+    这里用 --no-sign 钉住：期望身份存在、签名被关掉，产物就该是未签名。
+    顺带钉住反方向 —— 不签 + 期望身份是参数自相矛盾，判 1（用法错），
+    而不是一路走到签名层去报「签名必须有 OIDC token」。
     """
     r = repo(tmp_path)
     js = run("pack", "--repo", str(r), "--out", "dist", "--include", "src", "--sbom", "none",
              "--no-sign",
              "--identity", "https://github.com/o/r/.github/workflows/ci.yml@refs/heads/main",
              "--issuer", "https://token.actions.githubusercontent.com",
-             "--json", cwd=r, env={"SOURCE_DATE_EPOCH": "1700000000"}, expect=EXIT_OK)
-    assert json.loads(js.stdout)["signed"] is False
+             "--json", cwd=r, env={"SOURCE_DATE_EPOCH": "1700000000"}, expect=EXIT_USAGE)
+    payload = json.loads(js.stdout)
+    assert payload["error_kind"] == "usage" and "--identity" in payload["error"]
+
+
+def test_no_sign_with_token_is_a_usage_error(tmp_path):
+    """关了签名却递上 token：两个参数在打架，先判 1。
+
+    以前这种调用会一路走到签名层，报出「签名必须有 OIDC token」——
+    那是回答了「怎么签」，而用户问的是「我这两个参数怎么冲突了」。
+    """
+    r = repo(tmp_path)
+    js = run("pack", "--repo", str(r), "--out", "dist", "--include", "src", "--sbom", "none",
+             "--no-sign", "--oidc-token", _fake_oidc_token(),
+             "--json", cwd=r, env={"SOURCE_DATE_EPOCH": "1700000000"}, expect=EXIT_USAGE)
+    payload = json.loads(js.stdout)
+    assert payload["error_kind"] == "usage" and "--no-sign" in payload["error"]
+
+
+def test_signing_flag_alone_decides_whether_cosign_runs(tmp_path):
+    """`env` 里有 token 也不再是「顺手签了」的理由：开关只有 --sign/--no-sign。
+
+    内核里曾写成 `if opts.sign or opts.oidc_token:`，于是「关了签名、
+    但环境里有个 token」会静默签上，与 README 的「只有一种签法」对不上号。
+    """
+    r = repo(tmp_path)
+    js = run("pack", "--repo", str(r), "--out", "dist", "--include", "src", "--sbom", "none",
+             "--no-sign", "--json", cwd=r,
+             env={"PATH": "/nonexistent", "SOURCE_DATE_EPOCH": "1700000000",
+                  "SIGSTORE_ID_TOKEN": _fake_oidc_token()},
+             expect=EXIT_OK)
+    payload = json.loads(js.stdout)
+    assert payload["signed"] is False and payload["signature_bundle"] is None
 
 
 def test_sign_is_the_default_and_needs_a_token(tmp_path):

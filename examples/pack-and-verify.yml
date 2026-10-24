@@ -1,8 +1,5 @@
-# 最小可用：打包（默认用 cosign 签名）→ 登记锚点 → 自检 → 上传。
-#
-# 签名是默认动作，所以这个 job 要 id-token: write。真的拿不到 OIDC token
-# （自托管 runner）时，显式写 sign: 'false'，并靠包外的 sha256 锚点当信任根 ——
-# 那时证据依然有意义，但前提是 sha256 真的被登记到了包外。
+# 最小可用：打包 → 登记锚点 → 自检 → 上传。
+# 无签名也能构成证据，前提是 sha256 被登记到了包外（这里落到 artifact 与 job summary）。
 name: evidence pack
 
 on:
@@ -12,7 +9,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write   # keyless 签名（默认路径）必需
+  id-token: write   # 下面显式开了 keyless 签名，没有它换不到 OIDC token
 
 jobs:
   evidence:
@@ -34,19 +31,24 @@ jobs:
             dist/
             configs/
           sbom: auto
-          # 默认就签名（不写 sign 即 true）。identity 要写死到具体 workflow 文件，
-          # 且 @ 后面必须和触发的 ref 完全一致：写死 main 而流水线在 tag 上跑，
-          # 自检会判 2 —— 那是「签名身份不是我以为的那个」，不是配置笔误。
-          identity: https://github.com/${{ github.repository }}/.github/workflows/pack-and-verify.yml@${{ github.ref }}
-          issuer: https://token.actions.githubusercontent.com
-          # 包外台账：即使签了名，也把 sha256 登记一份，验包时能当锚点回送
+          sign: 'true'   # keyless：身份来自 OIDC 短期证书，没有任何长期密钥
+          # 无签名时的信任根：把 sha256 留在包外
           anchor-file: _evidence/anchor.txt
           expect-repo: ${{ github.repository }}
+          # 默认签名（keyless），身份由本次触发的 ref 决定：tag 上就是 @refs/tags/...
+          # 写死 ref 会让「换个 ref 跑」变成一次事故，而它本不该是个事故。
+          identity: https://github.com/${{ github.repository }}/.github/workflows/pack-and-verify.yml@${{ github.ref }}
 
       - name: 把锚点交给审计库（示例：打印到 summary）
+        env:
+          SHA256: ${{ steps.evidence.outputs.bundle-sha256 }}
+          VERIFY_CODE: ${{ steps.evidence.outputs.verify-exit-code }}
         run: |
-          echo "bundle sha256 = ${{ steps.evidence.outputs.bundle-sha256 }}"
-          echo "verify exit   = ${{ steps.evidence.outputs.verify-exit-code }}"
-          echo "signature     = ${{ steps.evidence.outputs.signature-mode }}"
-          # 登记到包外才是锚点：换成自己的制品库 / 审计库 / 工单
-          cat _evidence/anchor.txt
+          echo "bundle sha256 = ${SHA256}"
+          echo "verify exit   = ${VERIFY_CODE}"
+          # 自检没过就别把摘要当锚点登记：一个 2 或 3 的包登记出去，
+          # 等于给后来的人留了一份永远对不上的账。
+          if [ "${VERIFY_CODE}" != "0" ]; then
+            echo "::error title=证据包自检未通过（退出码 ${VERIFY_CODE}）::不登记这份包的摘要"
+            exit 1
+          fi

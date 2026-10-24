@@ -1,10 +1,13 @@
 # keyless 签名：信任根来自 OIDC 身份，而不是任何一把长期密钥。
-# identity 必须写死到具体的 workflow 文件，别用正则宽匹配 —— 宽匹配等于谁都能签。
+# identity 必须具体到 workflow 文件，别用正则宽匹配 —— 宽匹配等于谁都能签。
+# 但 `@` 后面那截必须跟着触发 ref 走：写死 @refs/heads/main 的示例在 tag 上
+# 会判 2 —— 那是「签名身份不是我以为的那个」，跟配置笔误不是一个事故等级。
 name: evidence pack (keyless)
 
 on:
   push:
     branches: [main]
+    tags: ['v*']   # tag 上也要能签：identity 的 @ 跟着 ref 走，两种 ref 都得绿
 
 permissions:
   contents: read
@@ -26,7 +29,9 @@ jobs:
         with:
           include: dist/
           sbom: none
-          # 签名是默认动作，不用显式写 sign: 'true'
+          sign: 'true'
+          # 触发 ref 决定 @ 之后那截：main 分支上是 @refs/heads/main，
+          # tag 上是 @refs/tags/vX.Y.Z。留空则由 Action 按本次触发自动拼。
           identity: https://github.com/${{ github.repository }}/.github/workflows/keyless-sign.yml@${{ github.ref }}
           issuer: https://token.actions.githubusercontent.com
           anchor-file: _evidence/anchor.txt

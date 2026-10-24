@@ -29,8 +29,10 @@ steps:
         dist/
         configs/
       sbom: auto
-      # 不用写 sign：默认就签名。不给 cosign-key 就走 keyless
-      identity: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/heads/main
+      sign: 'true'                # 不给 cosign-key 就走 keyless
+      # identity 留空 = 按本次触发的 repository + workflow + ref 自动拼。
+      # 要显式写就把 ref 也交给表达式，别把 @refs/heads/main 刻进文件里。
+      identity: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@${{ github.ref }}
       issuer: https://token.actions.githubusercontent.com
       anchor-file: _evidence/anchor.txt
       expect-repo: ${{ github.repository }}
@@ -39,8 +41,8 @@ steps:
 它做的事，按顺序：
 
 1. 检查 `python3 >= 3.10`（不往你的环境里装包，只借 `PYTHONPATH`）
-2. 装 cosign（除非显式 `sign: 'false'`）
-3. `pack` → 包与 `.sigstore.json`（默认签名）
+2. `sign: true` 时装 cosign
+3. `pack` → 包与 `.sigstore.json`
 4. `anchor-file` 有值时把 sha256 追加登记（包外台账）
 5. `verify: true`（默认）自检：有签名验签名，没签名则以 `expect-sha256` 为锚点
 6. `upload-artifact: true`（默认）把包、签名、台账一起上传
@@ -54,10 +56,10 @@ steps:
 | `sbom` | `auto` | `auto` / `none` / `python` / `node` |
 | `out-dir` | `_evidence` | 输出目录，会自动排除在收集范围外 |
 | `bundle-name` | `evidence-<短sha>.tar.gz` | 包名（保存时会去掉开头的点） |
-| `sign` | `true` | 是否用 cosign 签名。默认值意味着 job 需要 `id-token: write`（见下节）。`'false'` 只在你有另一条包外锚点时才是可辩护的选择 |
+| `sign` | 空（不签） | 只有小写 `'true'` 才算开。条件传值时用 `cond && 'true' \|\| ''`，别直接传 outputs（会渲染成 `'False'`） |
 | `cosign-key` | 空 | cosign **私钥**，仅用于签名；口令用 `COSIGN_PASSWORD` 环境变量 |
 | `cosign-public-key` | 空 | cosign **公钥**，仅用于验签。签名用私钥、验签用公钥，不能互换 |
-| `identity` / `issuer` | issuer 默认 GitHub OIDC | 期望签发身份，写进包内 `binding.json` |
+| `identity` / `issuer` | identity 按触发 ref 自动拼，issuer 默认 GitHub OIDC | 期望签发身份，写进包内 `binding.json` |
 | `verify` | `true` | 打完包立刻自检 |
 | `expect-sha256` | 空（用本次产物的 sha） | 包外锚点 |
 | `expect-repo` | 空 | 包外锚点 |
@@ -147,7 +149,24 @@ evidence-pack verify dist/x.tar.gz \
 identity 要和签名那次**完全一致**：workflow 文件路径 + ref。改了流水线文件名，
 历史 bundle 就验不过了 —— 这是特性，不是 bug。
 
+`@` 后面那截跟着触发 ref 走，别写死。GitHub 上写 `@${{ github.ref }}`
+（`refs/heads/main` / `refs/tags/v1.0.0`），CNB 上写 `@${{ CNB_BRANCH }}` 之类；
+在 Action 里干脆留空 —— 它会按本次触发的 repository + workflow + ref 自动拼。
+把 `@refs/heads/main` 抄进一个 tag 触发的流水线，只会在签完名之后判 2：
+「签名身份不是我以为的那个」，跟配置笔误不是一个事故等级。
+
 ## GitHub Actions 的 keyless 写法
+
+用 Action 的话不必自己换 token：`sign: 'true'` 之后，`scripts/action-oidc.sh`
+会拿 runner 注入的 `ACTIONS_ID_TOKEN_REQUEST_URL` + `ACTIONS_ID_TOKEN_REQUEST_TOKEN`
+去换一枚 `audience=sigstore` 的 token。
+
+**这里有个坑值得单独说**：`ACTIONS_ID_TOKEN_REQUEST_TOKEN` 是**换 token 的凭据**，
+不是 token 本体。把它当 token 用，Fulcio 只会回 401，而现场看起来跟
+「`id-token: write` 没开」一模一样 —— 最难查的那种。判据必须是「有没有签发方」，
+而不是「某个变量在不在」。
+
+手工调 CLI 时要自己换：
 
 ```yaml
 permissions:
@@ -157,14 +176,20 @@ permissions:
 steps:
   - run: pip install evidence-pack
   - run: |
+      # 注意：响应体里就是凭据，别 echo 出来
+      id_token=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+        "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sigstore" | python3 -c 'import json,sys;print(json.load(sys.stdin)["value"])')
+      echo "SIGSTORE_ID_TOKEN=$id_token" >> "$GITHUB_ENV"
+  - run: |
       evidence-pack pack --repo . --include dist \
         --oidc-token-env SIGSTORE_ID_TOKEN
-    env:
-      SIGSTORE_ID_TOKEN: ${{ steps.oidc.outputs.token }}   # 或直接让 cosign 自取
 ```
 
-GitHub 上 cosign 能自动从 Actions 拿 token，不必显式传；显式传的好处是
-`--oidc-token-env` 名字写死在命令里，签名身份来源可审计。
+token 只走环境变量（`--oidc-token-env`），绝不用 `--oidc-token` 拼进命令行：
+argv 会被 `ps`、作业日志和调试输出记住。谁拿到它，谁就能用你的身份签任何东西。
+
+换不到 token（端点 401 / 权限没开 / 变量缺失）一律是**退出码 3**：
+凭据没到位是「流水线坏了」，不是「证据无效」，两者的处置完全不同。
 
 ```yaml
 main:
@@ -197,54 +222,7 @@ base64 -w0 cosign.key   # 填进 COSIGN_KEY_B64
 base64 -w0 cosign.pub   # 填进 COSIGN_PUBLIC_KEY_B64
 ```
 
-没配密钥也照样跑：此时示例留空 `sign`（保持默认），签名落到 keyless，
-信任根是 job 的 OIDC token，不需要任何长期密钥。
-
-写法上有个坑：**别用 `sign: ${{ steps.cosign.outputs.configured }}`**。
-表达式里的布尔 `false` 渲染成字符串 `"False"`，而 Action 只认小写 `"false"`，
-于是「没配密钥」这个最普通的场景会当场判 3。示例统一写成
-
-```yaml
-sign: ${{ steps.cosign.outputs.configured == 'true' && 'true' || '' }}
-```
-
-空串是「没给」，Action 于是沿用默认值 `true`；配了密钥就显式传 `'true'`。
-
-一个 job 若既没配 `cosign-key`、也没开 `id-token: write`，会直接判退出码 3
-（拿不到 OIDC token）而不是悄悄不签。要么补权限，要么显式 `sign: 'false'`。
-
-## 签名的前提：OIDC 权限
-
-`sign` 默认是 `true`，而默认路径是 keyless。keyless 的信任根是平台签发的
-**OIDC token**，不是任何一把长期密钥。所以只要走默认路径，job 就必须打开
-OIDC 权限：
-
-```yaml
-permissions:
-  id-token: write   # 没有它，keyless 拿不到 token，Action 判 3
-```
-
-几个容易踩的点：
-
-- `id-token` 的默认值是 `none`，必须显式写 `write`。
-- **job 级 `permissions` 是白名单**：顶层声明了 `id-token: write`，只要 job 里
-  另写了 `permissions`，顶层那份就被整体覆盖 —— 记得在 job 里也写一遍。
-- token 有时效（GitHub 的同类 token 只有几分钟），只在签名那一刻用。
-  验证时不依赖 token，只依赖包内证书链加 `--identity` / `--issuer`。
-- 自托管 runner 通常没有 OIDC 签发方：改用 `cosign-key` 走 key 模式，
-  或显式 `sign: 'false'` 并以包外 sha256 锚点当信任根。
-
-三种情形的对应关系：
-
-| 情形 | 选择 |
-|---|---|
-| GitHub 托管 runner | `id-token: write` + keyless（默认） |
-| 自托管 / 本地 | `cosign-key` + key 模式，不需要 OIDC |
-| 两者皆无 | `sign: 'false'`，自备包外锚点，否则 `verify` 判 2 |
-
-缺 OIDC token 而又没关签名时，Action 在 `pack` 之前就以退出码 3 停下，
-报错里会点名 `id-token: write`。这是刻意的分流：**缺少工具/凭据属于流水线问题（3），
-证据被动手脚才是 2**，两者的处置方式完全不同。
+没配密钥也照样跑：`sign` 会留空，退化成「无签名 + sha256 锚点」模式。
 
 ## 关于 `expect-repo` 的边界
 

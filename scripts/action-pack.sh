@@ -96,7 +96,12 @@ if [ -z "${SIGSTORE_ID_TOKEN:-}" ] \
    && [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] \
    && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
   # 请求的 audience 必须与验签时的 --identity 对得上；GitHub 用 sigstore 这个值。
-  req_url="${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore"
+  # URL 可能已带 query，也可能不带 —— 无脑拼 & 会得到非法的 URL（curl: bad format）。
+  req_url="${ACTIONS_ID_TOKEN_REQUEST_URL}"
+  case "$req_url" in
+    *\?*) req_url="${req_url}&audience=sigstore" ;;
+    *)    req_url="${req_url}?audience=sigstore" ;;
+  esac
   if oidc_json="$(curl -fsSL -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
         --retry 2 --max-time 30 "$req_url")"; then
     SIGSTORE_ID_TOKEN="$(printf '%s' "$oidc_json" \

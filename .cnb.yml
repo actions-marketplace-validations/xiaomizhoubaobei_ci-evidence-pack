@@ -1,4 +1,4 @@
-# CNB 侧流水线：只干一件事——把本仓库强制镜像到 GitHub。
+# CNB 侧流水线：只干一件事——把本仓库同步到 GitHub。
 #
 # 单测、打包、Release 都不在这里跑：本仓库的验证入口是 `python -m pytest -q`
 # 与 GitHub Action（action.yml / examples/），CNB 不重复构建一遍。
@@ -36,8 +36,8 @@ main:
             username: ${GIT_USERNAME}
             password: ${GIT_ACCESS_TOKEN}
             branch: main
-            # 强制覆盖镜像：目标仓库以 CNB 侧为准，分叉时用 --force 覆盖
-            # （对应 git-sync 的 PLUGIN_FORCE）
-            force: true
+            # 不做强制覆盖：目标仓库分叉时宁可失败告警，也不静默推平。
+            # 需要镜像语义时显式传 true（PLUGIN_FORCE），别在默认路径上替人做决定。
+            force: false
             git_user: ${GIT_USERNAME}
             git_email: ${GIT_EMAIL}

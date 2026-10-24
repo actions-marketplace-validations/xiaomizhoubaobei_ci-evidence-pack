@@ -34,8 +34,10 @@ jobs:
             dist/
             configs/
           sbom: auto
-          # 默认就签名（不写 sign 即 true），identity 要写死到具体 workflow 文件
-          identity: https://github.com/${{ github.repository }}/.github/workflows/pack-and-verify.yml@refs/heads/main
+          # 默认就签名（不写 sign 即 true）。identity 要写死到具体 workflow 文件，
+          # 且 @ 后面必须和触发的 ref 完全一致：写死 main 而流水线在 tag 上跑，
+          # 自检会判 2 —— 那是「签名身份不是我以为的那个」，不是配置笔误。
+          identity: https://github.com/${{ github.repository }}/.github/workflows/pack-and-verify.yml@${{ github.ref }}
           issuer: https://token.actions.githubusercontent.com
           # 包外台账：即使签了名，也把 sha256 登记一份，验包时能当锚点回送
           anchor-file: _evidence/anchor.txt
@@ -45,3 +47,6 @@ jobs:
         run: |
           echo "bundle sha256 = ${{ steps.evidence.outputs.bundle-sha256 }}"
           echo "verify exit   = ${{ steps.evidence.outputs.verify-exit-code }}"
+          echo "signature     = ${{ steps.evidence.outputs.signature-mode }}"
+          # 登记到包外才是锚点：换成自己的制品库 / 审计库 / 工单
+          cat _evidence/anchor.txt

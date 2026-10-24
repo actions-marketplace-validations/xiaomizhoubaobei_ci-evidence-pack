@@ -74,8 +74,8 @@ Action 是 composite 的，不往调用方的解释器里 `pip install`，只把
 只想尽快用起来，直接把 [`examples/release.yml`](examples/release.yml) 复制到
 你仓库的 `.github/workflows/` 下，然后改两处：`include` 里的产物路径、
 以及（可选）`COSIGN_KEY_B64` / `COSIGN_PUBLIC_KEY_B64` / `COSIGN_PASSWORD`
-三个 secret。没配密钥也不会红：示例会显式写 `sign: 'false'`，退化成
-「无签名 + sha256 锚点」，并在 job 里给出 notice 说明。
+三个 secret。没配密钥也不会红：示例留空 `sign`（保持默认），签名走 keyless，
+信任根是 job 的 OIDC token，不需要任何长期密钥。
 
 ### OIDC 权限：默认签名绕不开的一步
 

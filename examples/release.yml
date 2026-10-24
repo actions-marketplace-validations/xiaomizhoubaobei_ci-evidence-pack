@@ -1,7 +1,7 @@
 # 发版即取证：打 tag / 手动触发 → 打包产物 → 签名 → 自检 → 挂到 Release。
 #
 # 这是「照抄就能跑」的那一份：除了把你自己的产物路径填进 include，
-# 不需要改任何其他东西。没配 cosign 密钥时也不会红。
+# 不需要改任何其他东西。没配 cosign 密钥也不会红 —— 那时走 keyless。
 #
 # 先说清一件事：没签名时，自检回送的是刚打出来的包摘要，那只够证明
 # 「步骤之间没被动过」，属于自己给自己发证。真正的包外锚点由最后一步
@@ -37,9 +37,14 @@ jobs:
           python -m build --wheel --outdir dist
       # ↑↑↑ 上面这两行是唯一需要你改的地方 ↑↑↑
 
-      # cosign 的签名密钥是**文件**，不是字符串：先把 secret 落成临时文件，
-      # 再把路径交给 Action。没有配这对 secret 就整个跳过，走无签名模式。
-      - name: 准备 cosign 密钥（没配则跳过）
+      # 签名是默认动作，默认路径是 keyless：信任根是 job 的 OIDC token，
+      # 不需要任何长期密钥。想持钥签名（自托管 runner / 想完全离线验签）时，
+      # 把 COSIGN_KEY_B64 / COSIGN_PUBLIC_KEY_B64 两个 secret 配上即可，
+      # 下面的步骤会自动切到 key 模式。
+      #
+      # 两种情形都走不到时（既没密钥、也没有 OIDC）才会显式关签名，
+      # 退化成「无签名 + 包外 sha256 锚点」—— 那仍算证据，前提是锚点真的在包外。
+      - name: 准备 cosign 密钥（配了才用，否则走默认 keyless）
         id: cosign
         env:
           COSIGN_KEY_B64: ${{ secrets.COSIGN_KEY_B64 }}
@@ -50,8 +55,14 @@ jobs:
           # 而一个「少了换行的私钥」只会报一句难以理解的解析错误。
           if [ -z "${COSIGN_KEY_B64:-}" ]; then
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::未配置 COSIGN_KEY_B64，本次不签名 —— 以 sha256 锚点为准"
+            echo "::notice::未配置 COSIGN_KEY_B64 —— 走默认的 keyless 签名（需要 id-token: write）"
             exit 0
+          fi
+          if [ -z "${COSIGN_PUBLIC_KEY_B64:-}" ]; then
+            # 签名用私钥、验签用公钥：只给私钥等于能签不能验，
+            # 那这份包的签名在自检那步就会被判 2。
+            echo "::error::配了 COSIGN_KEY_B64 就必须同时配 COSIGN_PUBLIC_KEY_B64，否则签得出、验不了"
+            exit 1
           fi
           umask 077
           mkdir -p _keys
@@ -67,17 +78,19 @@ jobs:
             dist/
             pyproject.toml
           sbom: auto
-          # 无签名时的信任根：把 sha256 登记到包外的台账（会作为 artifact 上传）
           anchor-file: _evidence/anchor.txt
-          # 配了密钥就签：签名用私钥、验签用公钥，别拿私钥去验
-          sign: ${{ steps.cosign.outputs.configured }}
+          # 留空 = 保持默认（签名）。注意这里的空串是「没给」，不是布尔 false：
+          # 表达式的 false 渲染成字符串 "False"，Action 只认 "false"，会当场判 3。
+          sign: ${{ steps.cosign.outputs.configured == 'true' && 'true' || '' }}
           cosign-key: ${{ steps.cosign.outputs.configured == 'true' && '_keys/cosign.key' || '' }}
           cosign-public-key: ${{ steps.cosign.outputs.configured == 'true' && '_keys/cosign.pub' || '' }}
-          # 显式给出期望仓库：包内若记了 remote 就核对，没记则只留告警不判红
+          # keyless 时 identity 必须写死到具体 workflow 文件：宽匹配等于谁都能签
+          identity: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
+          issuer: https://token.actions.githubusercontent.com
+          # 包内若记了 remote 就核对，没记则只留告警不判红
           expect-repo: ${{ github.repository }}
         env:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-          verify: 'true'
 
       - name: 把证据包挂到 Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -90,6 +103,11 @@ jobs:
             "${{ steps.evidence.outputs.bundle-path }}" \
             "${{ steps.evidence.outputs.signature-bundle }}" \
             --clobber
+          # 自检若判了 2/3，Action 那步已经红过；这里再挡一道，免得「红着也发出去了」。
+          if [ "${{ steps.evidence.outputs.verify-exit-code }}" != "0" ]; then
+            echo "::error title=evidence-pack 自检未通过::拒绝为一份自己都不信的包发版"
+            exit 1
+          fi
           # 锚点也贴进 Release 正文：将来核对时从包外读，而不是从包里翻。
           gh release view "${GITHUB_REF_NAME}" --json body -q .body > body.md
           {

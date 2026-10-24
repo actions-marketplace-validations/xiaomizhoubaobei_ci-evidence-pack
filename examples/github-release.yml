@@ -4,8 +4,9 @@
 #   1. 「构建」步骤里的产物路径（并同步改 include 里对应那一行）
 #   2. 三个 secret（可选）：COSIGN_KEY_B64 / COSIGN_PUBLIC_KEY_B64 / COSIGN_PASSWORD
 #
-# 没配密钥也照样绿：退化成「无签名 + sha256 锚点」。但请记住——
-# sha256 被写进 Release 正文，才让这份包成为证据；包里那份 manifest 只证明自洽。
+# 没配密钥也照样绿：签名走默认的 keyless，信任根是 job 的 OIDC token。
+# 但请记住——sha256 被写进 Release 正文，才让这份包成为证据；
+# 包里那份 manifest 只证明自洽。
 name: release
 
 on:
@@ -41,7 +42,9 @@ jobs:
 
       # cosign 的密钥是**文件**不是字符串。用 base64 存：PEM 的换行过一遍 YAML
       # 容易被吃掉，而「少了换行的私钥」只会回你一句看不懂的解析错误。
-      - name: 准备 cosign 密钥（没配则跳过）
+      #
+      # 这一步是可选的：不配 secret 就走默认的 keyless，不需要任何长期密钥。
+      - name: 准备 cosign 密钥（配了才用，否则走默认 keyless）
         id: cosign
         env:
           COSIGN_KEY_B64: ${{ secrets.COSIGN_KEY_B64 }}
@@ -50,8 +53,13 @@ jobs:
           set -euo pipefail
           if [ -z "${COSIGN_KEY_B64:-}" ]; then
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::未配置 COSIGN_KEY_B64，本次不签名 —— 以 sha256 锚点为准"
+            echo "::notice::未配置 COSIGN_KEY_B64 —— 走默认的 keyless 签名（需要 id-token: write）"
             exit 0
+          fi
+          if [ -z "${COSIGN_PUBLIC_KEY_B64:-}" ]; then
+            # 只给私钥等于能签不能验，自检那步会如实判 2，索性挡在前面。
+            echo "::error::配了 COSIGN_KEY_B64 就必须同时配 COSIGN_PUBLIC_KEY_B64"
+            exit 1
           fi
           umask 077
           mkdir -p _keys
@@ -69,18 +77,19 @@ jobs:
           sbom: auto
           # 包外台账：sha256 落到 _evidence/anchor.txt，随 artifact 一起上传
           anchor-file: _evidence/anchor.txt
-          # 配了密钥就签。注意签名用私钥、验签用公钥，拿私钥去验是安全上的错
-          sign: ${{ steps.cosign.outputs.configured || 'false' }}
+          # 留空 = 保持默认（签名）。空串是「没给」；表达式的布尔 false 会渲染成
+          # 字符串 "False"，而 Action 只认 "false"，那样会当场判 3。
+          sign: ${{ steps.cosign.outputs.configured == 'true' && 'true' || '' }}
           cosign-key: ${{ steps.cosign.outputs.configured == 'true' && '_keys/cosign.key' || '' }}
           cosign-public-key: ${{ steps.cosign.outputs.configured == 'true' && '_keys/cosign.pub' || '' }}
+          # keyless 时 identity 必须写死到具体 workflow 文件；@ref 跟着触发 ref 走
+          identity: https://github.com/${{ github.repository }}/.github/workflows/github-release.yml@${{ github.ref }}
+          issuer: https://token.actions.githubusercontent.com
           # 包内记了 remote 就核对；没记（actions/checkout 默认没有）只留告警不判红
           expect-repo: ${{ github.repository }}
         env:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
 
-      # 白名单校验：发布包里只允许出现你打算交付的东西。
-      # 开发资产（.git/ tests/ AGENTS.md install_gpg_keys.sh 等）一旦混进去，
-      # 会被铺到使用者的目录里，其中改写全局 git 配置的脚本若被误执行，风险由使用者承担。
       # 白名单校验：证据包里只允许出现你打算交付的东西。
       # 开发资产（.git/ tests/ AGENTS.md install_gpg_keys.sh 等）一旦混进去，
       # 可能被铺到使用者的目录里，其中改写全局 git 配置的脚本若被误执行，

@@ -478,3 +478,138 @@ def test_example_outputs_are_real_action_outputs(path):
     }
     unknown = {o for _, o in used_ep} - declared
     assert not unknown, f"{path.name} 引用了不存在的 output：{sorted(unknown)}"
+
+
+# ---------------------------------------------------------------------------
+# 默认签名之后，示例与脚本之间的「开关怎么传」变成最容易出事的一段：
+# 少一个 token 就静默不签，多一个 False 就当场判 3。
+# ---------------------------------------------------------------------------
+
+def test_missing_oidc_endpoint_is_3_and_names_the_permission(workspace):
+    """既没私钥、也没有换 token 的凭据：3，且报错要点名 id-token。"""
+    proc = _call("action-pack.sh", _action_env(workspace), cwd=workspace)
+    assert proc.returncode == 3
+    assert "id-token" in proc.stdout + proc.stderr
+
+
+def test_oidc_token_is_exchanged_before_signing(workspace, tmp_path):
+    """托管 runner 上就绪的是「换 token 的凭据」，不是 token 本体。
+
+    这一步曾是缺口：脚本只判断凭据存在与否就放行，真去签名时却没人把
+    token 取回来 —— 于是 job 明明开了 id-token: write，仍然在 Fulcio 那里 401。
+    这里起一个假的 OIDC 端点，确认换出来的 token 真的经 SIGSTORE_ID_TOKEN
+    传到了内核（用假 cosign 记录环境变量）。
+    """
+    import http.server
+    import threading
+
+    fake_token = "h." + "p" * 120 + ".s"   # 三段式、长度过 MIN_TOKEN_LEN
+    seen: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler 约定
+            assert self.path.endswith("&audience=sigstore"), self.path
+            body = json.dumps({"value": fake_token}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):  # 静音
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        env = _action_env(
+            workspace,
+            INPUT_SIGN="true",
+            INPUT_COSIGN_KEY="",           # 没私钥 → 必须走 keyless
+            ACTIONS_ID_TOKEN_REQUEST_URL=f"http://127.0.0.1:{server.server_port}/oidc?x=1",
+            ACTIONS_ID_TOKEN_REQUEST_TOKEN="request-token",
+        )
+        # 假 cosign：记录拿到的 token，并按 keyless 的形态造一份 bundle。
+        # 内核会核对 x509 证书链与 tlog 条目（拿不到就该判 3），所以不能只 exit 0。
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        fake = bin_dir / "cosign"
+        fake.write_text(
+            "#!/bin/sh\n"
+            'printf "%s" "${SIGSTORE_ID_TOKEN:-}" > "$CAPTURED_TOKEN"\n'
+            "bundle=\"\"\n"
+            "while [ $# -gt 0 ]; do\n"
+            '  if [ "$1" = "--bundle" ]; then bundle="$2"; shift; fi\n'
+            "  shift\n"
+            "done\n"
+            "cat > \"$bundle\" <<'JSON'\n"
+            '{"messageSignature": {"messageDigest": {"algorithm": "SHA2_256", "digest": ""}},\n'
+            ' "verificationMaterial": {"x509CertificateChain": {"certificates": '
+            '[{"rawBytes": ""}]}, "tlogEntries": [{"logIndex": "1"}]}}\n'
+            "JSON\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env["CAPTURED_TOKEN"] = str(tmp_path / "token.txt")
+
+        proc = _call("action-pack.sh", env, cwd=workspace)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert (tmp_path / "token.txt").read_text(encoding="utf-8") == fake_token
+        # token 绝不进 argv：命令行里出现它等于把它写进作业日志。
+        assert fake_token not in proc.stdout
+    finally:
+        server.shutdown()
+
+
+def test_oidc_request_failure_is_3_not_2(workspace):
+    """换 token 失败属于「流水线坏了」（3），不能糊成「证据无效」（2）。"""
+    env = _action_env(
+        workspace,
+        ACTIONS_ID_TOKEN_REQUEST_URL="http://127.0.0.1:1/oidc?x=1",  # 必然连不上
+        ACTIONS_ID_TOKEN_REQUEST_TOKEN="request-token",
+    )
+    proc = _call("action-pack.sh", env, cwd=workspace)
+    assert proc.returncode == 3
+    assert "id-token" in proc.stdout + proc.stderr
+
+
+def test_examples_never_hand_a_boolean_false_to_sign():
+    """`sign: ${{ ... || 'false' }}` 是坑：表达式 false 会渲染成 "False"。
+
+    Action 只认小写 "false"，于是「没配密钥」这个最普通的场景会当场判 3。
+    所以示例里只能用「空串 = 保留默认」的写法。
+    """
+    import re
+
+    for path in EXAMPLES:
+        text = path.read_text(encoding="utf-8")
+        bad = re.findall(r"^\s*sign:\s*\$\{\{.*or\s*'false'.*\}\}", text, re.M)
+        assert not bad, f"{path.name} 会把布尔 false 传给 sign：{bad}"
+
+
+def test_examples_pin_identity_to_the_triggering_ref():
+    """identity 必须写死到具体 workflow 文件，@ 后的 ref 要跟着触发 ref 走。
+
+    固定在 `refs/heads/main` 的示例，一旦流水线在 tag 上跑，自检就会判 2 ——
+    那是「签名身份不是我以为的那个」，与配置笔误不是一个事故等级。
+    """
+    for path in EXAMPLES:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.lstrip().startswith("identity:") and "github.com" in line:
+                assert "/.github/workflows/" in line, f"{path.name} 的 identity 没钉到具体文件"
+                assert "||" not in line and "*" not in line, f"{path.name} 的 identity 用了宽匹配"
+                assert "@${{" in line, f"{path.name} 的 identity 把 ref 写死了：{line.strip()}"
+
+
+def test_examples_that_sign_enable_id_token():
+    """默认签名 + 没给私钥 = keyless，那就必须有 id-token: write，否则必判 3。"""
+    for path in EXAMPLES:
+        text = path.read_text(encoding="utf-8")
+        if "XMZZUZHI/Github/ci-evidence-pack" not in text:
+            continue
+        # 校验/取脚本这两类示例根本不打包，不涉及签名
+        if "action-verify.sh" in text or "INPUT_BUNDLE" in text:
+            continue
+        assert "id-token: write" in text, f"{path.name} 默认签名却没开 id-token: write"

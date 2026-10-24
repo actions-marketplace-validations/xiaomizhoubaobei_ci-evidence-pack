@@ -197,12 +197,21 @@ base64 -w0 cosign.key   # 填进 COSIGN_KEY_B64
 base64 -w0 cosign.pub   # 填进 COSIGN_PUBLIC_KEY_B64
 ```
 
-没配密钥也照样跑：示例里 `sign: ${{ steps.cosign.outputs.configured }}` 会算成
-`false`，退化成「无签名 + sha256 锚点」模式，并打出 notice 说明原因。
+没配密钥也照样跑：此时示例留空 `sign`（保持默认），签名落到 keyless，
+信任根是 job 的 OIDC token，不需要任何长期密钥。
 
-注意默认值是 `true`：一个 job 若既没配 `cosign-key`、也没有 `id-token: write`，
-会直接判退出码 3（缺 OIDC token / cosign 拿不到 token）而不是悄悄不签。
-要么补权限，要么显式关签名。
+写法上有个坑：**别用 `sign: ${{ steps.cosign.outputs.configured }}`**。
+表达式里的布尔 `false` 渲染成字符串 `"False"`，而 Action 只认小写 `"false"`，
+于是「没配密钥」这个最普通的场景会当场判 3。示例统一写成
+
+```yaml
+sign: ${{ steps.cosign.outputs.configured == 'true' && 'true' || '' }}
+```
+
+空串是「没给」，Action 于是沿用默认值 `true`；配了密钥就显式传 `'true'`。
+
+一个 job 若既没配 `cosign-key`、也没开 `id-token: write`，会直接判退出码 3
+（拿不到 OIDC token）而不是悄悄不签。要么补权限，要么显式 `sign: 'false'`。
 
 ## 签名的前提：OIDC 权限
 

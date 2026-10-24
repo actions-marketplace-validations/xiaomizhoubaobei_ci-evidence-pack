@@ -65,7 +65,9 @@ elif [ -n "${INPUT_COSIGN_KEY:-}" ]; then
   ARGS+=(--key "$INPUT_COSIGN_KEY")
 else
   # keyless 靠 runner 派发的 OIDC token，命令行给不了也没法伪造。
-  if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+  # 判据是「有没有签发方」而不是「token 字面量在不在」：GitHub 托管 runner 上
+  # 就绪的是 ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN 这对凭据，token 要拿它去换。
+  if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] && [ -z "${SIGSTORE_ID_TOKEN:-}" ]; then
     echo "::error::未提供 cosign-key，走 keyless 就需要 id-token: write，且只在 GitHub 托管 runner 上有 OIDC token。自托管 / 本地请改用 cosign-key，或显式 sign: 'false'（此时必须有包外锚点）"
     exit 3
   fi
@@ -82,6 +84,35 @@ if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
   SOURCE_DATE_EPOCH=$(git -C "$REPO" log -1 --format=%ct 2>/dev/null || true)
 fi
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(date +%s)}"
+
+# keyless 要的是 token 本体，而 GitHub 托管 runner 上就绪的
+# ACTIONS_ID_TOKEN_REQUEST_TOKEN 只是**换 token 的凭据**，不是 token。
+# 少了这一步，job 明明开了 id-token: write，签名仍会在 Fulcio 那里 401 ——
+# 现场看起来就跟「权限没开」一模一样。所以在这里换出来，交给内核。
+#
+# 调用方若已显式给了 SIGSTORE_ID_TOKEN（别的平台 / cosign 自取），就原样尊重，
+# 不去覆盖。token 只经环境变量传递，绝不进 argv（argv 会进作业日志）。
+if [ -z "${SIGSTORE_ID_TOKEN:-}" ] \
+   && [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] \
+   && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+  # 请求的 audience 必须与验签时的 --identity 对得上；GitHub 用 sigstore 这个值。
+  req_url="${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore"
+  if oidc_json="$(curl -fsSL -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+        --retry 2 --max-time 30 "$req_url")"; then
+    SIGSTORE_ID_TOKEN="$(printf '%s' "$oidc_json" \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("value",""))')"
+    if [ -z "$SIGSTORE_ID_TOKEN" ]; then
+      echo "::error::OIDC 端点没有返回 value，拿不到 token（权限或 audience 不对）"
+      exit 3
+    fi
+    export SIGSTORE_ID_TOKEN
+  else
+    # 拿不到 token 是凭据/权限问题，属于「流水线坏了」：3，不是 2。
+    echo "::error::向 ACTIONS_ID_TOKEN_REQUEST_URL 换 OIDC token 失败，请确认 job 上有 id-token: write"
+    exit 3
+  fi
+fi
+[ -n "${SIGSTORE_ID_TOKEN:-}" ] && ARGS+=(--oidc-token-env SIGSTORE_ID_TOKEN)
 
 # set -o pipefail 让 tee 不会把 python 的退出码吃掉，这里原样交还 0/1/2/3：
 # 「证据无效」和「工具坏了」在 Action 里也得是两个不同的结论。

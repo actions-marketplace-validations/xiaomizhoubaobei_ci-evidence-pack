@@ -25,11 +25,19 @@ from evidence_pack.signing import (
     verify,
 )
 
-IDENTITY = "https://cnb.cool/XMZZUZHI/Github/ci-evidence-pack/-/commit/x.yml@refs/heads/main"
+IDENTITY = (
+    "https://cnb.cool/XMZZUZHI/Github/ci-evidence-pack/-/commit/x.yml@refs/heads/main"
+)
 ISSUER = "https://oidc.cnb.cool"
-TOKEN = "a" * 120 + "." + base64.urlsafe_b64encode(
-    json.dumps({"sub": IDENTITY, "iss": ISSUER}).encode()
-).decode().rstrip("=") + "." + "c" * 60
+TOKEN = (
+    "a" * 120
+    + "."
+    + base64.urlsafe_b64encode(json.dumps({"sub": IDENTITY, "iss": ISSUER}).encode())
+    .decode()
+    .rstrip("=")
+    + "."
+    + "c" * 60
+)
 
 
 def _fake_cosign(tmp_path: Path, body: str) -> Path:
@@ -47,12 +55,14 @@ def _bundle_payload(raw_bytes: str = "", *, tlog: bool = True) -> str:
         material["x509CertificateChain"] = {"certificates": [{"rawBytes": raw_bytes}]}
     if tlog:
         material["tlogEntries"] = [{"integratedTime": "1700000000"}]
-    return json.dumps({
-        "messageSignature": {
-            "messageDigest": {"digest": base64.b64encode(b"\x00" * 32).decode()}
-        },
-        "verificationMaterial": material,
-    })
+    return json.dumps(
+        {
+            "messageSignature": {
+                "messageDigest": {"digest": base64.b64encode(b"\x00" * 32).decode()}
+            },
+            "verificationMaterial": material,
+        }
+    )
 
 
 def test_resolve_token_from_env(monkeypatch):
@@ -140,7 +150,7 @@ def test_bundle_without_cert_chain_is_tool_failure(tmp_path, monkeypatch):
     bundle = tmp_path / "b.sigstore.json"
     fake = _fake_cosign(
         tmp_path,
-        f'cat > "{bundle}" <<\'BUNDLE\'\n{_bundle_payload()}\nBUNDLE\nexit 0\n',
+        f"cat > \"{bundle}\" <<'BUNDLE'\n{_bundle_payload()}\nBUNDLE\nexit 0\n",
     )
     monkeypatch.setenv("PATH", f"{fake}:{os.environ['PATH']}")
     with pytest.raises(ToolFailure, match="证书"):
@@ -171,8 +181,13 @@ def test_custom_fulcio_and_rekor_reach_cosign(tmp_path, monkeypatch):
         f'cat > "{bundle}" <<\'BUNDLE\'\n{_bundle_payload("Zm9v")}\nBUNDLE\nexit 0\n',
     )
     monkeypatch.setenv("PATH", f"{fake}:{os.environ['PATH']}")
-    sign(blob, bundle, oidc_token=TOKEN,
-         fulcio_url="https://fulcio.internal", rekor_url="https://rekor.internal")
+    sign(
+        blob,
+        bundle,
+        oidc_token=TOKEN,
+        fulcio_url="https://fulcio.internal",
+        rekor_url="https://rekor.internal",
+    )
     argv = argv_file.read_text()
     assert "--fulcio-url https://fulcio.internal" in argv
     assert "--rekor-url https://rekor.internal" in argv
@@ -191,16 +206,32 @@ def _der_with_window(not_before: datetime, not_after: datetime) -> str:
         cert = Path(tmp) / "c.pem"
         fmt = "%Y%m%d%H%M%SZ"
         subprocess.run(
-            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-             "-keyout", str(key), "-out", str(cert), "-days", "1",
-             "-subj", "/CN=test",
-             "-addext", "basicConstraints=critical,CA:FALSE"],
-            check=True, capture_output=True,
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
+                str(key),
+                "-out",
+                str(cert),
+                "-days",
+                "1",
+                "-subj",
+                "/CN=test",
+                "-addext",
+                "basicConstraints=critical,CA:FALSE",
+            ],
+            check=True,
+            capture_output=True,
         )
         # 用 openssl ca 改窗口太重，这里只验证解析路径：直接读回真实窗口。
         raw = subprocess.run(
             ["openssl", "x509", "-in", str(cert), "-outform", "DER"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         ).stdout
         return base64.b64encode(raw).decode()
 
@@ -223,8 +254,9 @@ def _fake_verify(tmp_path: Path) -> Path:
 
 
 def test_verify_rejects_signature_outside_short_lived_cert(tmp_path, monkeypatch):
-    raw = _der_with_window(datetime.now(timezone.utc),
-                           datetime.now(timezone.utc) + timedelta(minutes=10))
+    raw = _der_with_window(
+        datetime.now(timezone.utc), datetime.now(timezone.utc) + timedelta(minutes=10)
+    )
     # 证书窗口是"现在~+10 分钟"，Rekor 记录却在一年后 —— 时间对不上。
     far_future = int((datetime.now(timezone.utc) + timedelta(days=365)).timestamp())
     bundle = _verify_bundle(tmp_path, raw, far_future)
@@ -235,8 +267,9 @@ def test_verify_rejects_signature_outside_short_lived_cert(tmp_path, monkeypatch
 
 
 def test_verify_accepts_signature_inside_cert_window(tmp_path, monkeypatch):
-    raw = _der_with_window(datetime.now(timezone.utc),
-                           datetime.now(timezone.utc) + timedelta(minutes=10))
+    raw = _der_with_window(
+        datetime.now(timezone.utc), datetime.now(timezone.utc) + timedelta(minutes=10)
+    )
     bundle = _verify_bundle(tmp_path, raw, int(datetime.now(timezone.utc).timestamp()))
     fake = _fake_verify(tmp_path)
     monkeypatch.setenv("PATH", f"{fake}:{os.environ['PATH']}")

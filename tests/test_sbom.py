@@ -30,7 +30,9 @@ def test_unknown_choice_is_usage_error(tmp_path):
 def test_requirements_fallback_when_scanner_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(sbom.shutil, "which", lambda _name: None)
     out = tmp_path / "sbom" / "sbom.cdx.json"
-    repo = _repo(tmp_path, "typer>=0.12,<1.0\npytest==8.3.0  # 测试用\n-r other.txt\n-e .\n")
+    repo = _repo(
+        tmp_path, "typer>=0.12,<1.0\npytest==8.3.0  # 测试用\n-r other.txt\n-e .\n"
+    )
     assert sbom.generate(repo, "auto", out) == "python"
     data = json.loads(out.read_text(encoding="utf-8"))
     names = [c["name"] for c in data["components"]]
@@ -38,7 +40,9 @@ def test_requirements_fallback_when_scanner_missing(tmp_path, monkeypatch):
     assert {c["name"]: c["version"] for c in data["components"]}["pytest"] == "8.3.0"
 
 
-def test_python_project_without_scanner_or_requirements_is_exit_3(tmp_path, monkeypatch):
+def test_python_project_without_scanner_or_requirements_is_exit_3(
+    tmp_path, monkeypatch
+):
     """pyproject.toml 认得出是 Python 项目，但既没扫描器也没 requirements.txt → 3。"""
     monkeypatch.setattr(sbom.shutil, "which", lambda _name: None)
     repo = _repo(tmp_path)
@@ -87,10 +91,13 @@ def _pyproject_repo(tmp_path: Path, body: str) -> Path:
 def test_pyproject_dependencies_are_used_when_scanner_missing(tmp_path, monkeypatch):
     """只有 pyproject.toml 也要能出 SBOM，而不是判 3。"""
     monkeypatch.setattr(sbom.shutil, "which", lambda _name: None)
-    repo = _pyproject_repo(tmp_path, '''[project]
+    repo = _pyproject_repo(
+        tmp_path,
+        """[project]
 name = "demo"
 dependencies = ["typer>=0.12", "httpx==0.27.0"]
-''')
+""",
+    )
     out = tmp_path / "x.json"
     assert sbom.generate(repo, "auto", out) == "python"
     data = json.loads(out.read_text(encoding="utf-8"))
@@ -103,16 +110,21 @@ dependencies = ["typer>=0.12", "httpx==0.27.0"]
 @pytest_tomli
 def test_pyproject_optional_dependencies_are_included(tmp_path, monkeypatch):
     monkeypatch.setattr(sbom.shutil, "which", lambda _name: None)
-    repo = _pyproject_repo(tmp_path, '''[project]
+    repo = _pyproject_repo(
+        tmp_path,
+        """[project]
 name = "demo"
 dependencies = ["typer"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
-''')
+""",
+    )
     out = tmp_path / "x.json"
     sbom.generate(repo, "auto", out)
-    names = [c["name"] for c in json.loads(out.read_text(encoding="utf-8"))["components"]]
+    names = [
+        c["name"] for c in json.loads(out.read_text(encoding="utf-8"))["components"]
+    ]
     assert names == ["pytest", "typer"]
 
 
@@ -151,6 +163,7 @@ def test_broken_pyproject_does_not_crash(tmp_path, monkeypatch):
 # 这不是洁癖 —— 同一个 commit 打两次包哈希不同，「可复现」就是句空话。
 # ---------------------------------------------------------------------------
 
+
 def test_scanner_timestamp_and_serial_are_normalized(tmp_path):
     repo = _repo(tmp_path, "typer==0.12\n")
     out = tmp_path / "x.json"
@@ -174,4 +187,7 @@ def test_serial_number_changes_when_content_changes(tmp_path):
     out_a, out_b = tmp_path / "a.json", tmp_path / "b.json"
     sbom.generate(repo_a, "python", out_a, epoch=1700000000)
     sbom.generate(repo_b, "python", out_b, epoch=1700000000)
-    assert json.loads(out_a.read_text())["serialNumber"] != json.loads(out_b.read_text())["serialNumber"]
+    assert (
+        json.loads(out_a.read_text())["serialNumber"]
+        != json.loads(out_b.read_text())["serialNumber"]
+    )

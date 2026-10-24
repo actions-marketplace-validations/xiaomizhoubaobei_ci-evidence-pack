@@ -1,0 +1,9 @@
+[flake8]
+max-line-length = 100
+extend-ignore = E203,W503
+
+# tests/test_signing.py 里 `_COSIGN_V3_FULCIO_400` 是 cosign v3.1.4 失败输出的**原样摘录**。
+# 它是解析逻辑真正要面对的输入，折行就等于改夹具，测的也不再是真实现象。
+# 所以只对这个文件豁免行长，别处不许效仿。
+per-file-ignores =
+    tests/test_signing.py: E501

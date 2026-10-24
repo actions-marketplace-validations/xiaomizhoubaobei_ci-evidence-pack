@@ -19,7 +19,14 @@ from .errors import UsageError
 
 # 默认排除只用于「遍历时顺手跳过」；用户显式 --include 的路径不受其约束，
 # 否则 `--include dist` 这种最常见的用法会被自己的默认值挡死。
-DEFAULT_EXCLUDES: tuple[str, ...] = (".git", "node_modules", "dist", "__pycache__", ".venv", "venv")
+DEFAULT_EXCLUDES: tuple[str, ...] = (
+    ".git",
+    "node_modules",
+    "dist",
+    "__pycache__",
+    ".venv",
+    "venv",
+)
 # 无论是否显式指定，都不收：收 .git 既毁确定性，也把密钥扫进包里。
 HARD_EXCLUDES: tuple[str, ...] = (".git",)
 
@@ -31,7 +38,9 @@ class CollectResult:
 
 
 class Collector:
-    def __init__(self, repo_root: Path, out_dir: Path, excludes: list[str] | None = None) -> None:
+    def __init__(
+        self, repo_root: Path, out_dir: Path, excludes: list[str] | None = None
+    ) -> None:
         self.repo_root = repo_root.resolve()
         self.out_dir = out_dir.resolve()
         names = [*DEFAULT_EXCLUDES, *(excludes or []), *self._from_gitignore()]
@@ -124,7 +133,9 @@ class Collector:
         for raw in includes:
             target = self.resolve_include(raw)
             if target == self.repo_root:
-                raise UsageError("--include . 会把整个仓库（含输出目录）装进去；请显式列出要收的路径。")
+                raise UsageError(
+                    "--include . 会把整个仓库（含输出目录）装进去；请显式列出要收的路径。"
+                )
             if self._is_hard_excluded(target):
                 raise UsageError(
                     f"--include {raw!r} 落在不可收范围内（.git 或输出目录自身）。"
@@ -151,7 +162,9 @@ class Collector:
                 collected.append(posix)
 
         if not collected:
-            raise UsageError("所有 --include 都被排除规则过滤掉了（只剩 .git / 输出目录），证据包会为空。")
+            raise UsageError(
+                "所有 --include 都被排除规则过滤掉了（只剩 .git / 输出目录），证据包会为空。"
+            )
         return CollectResult(rel_paths=sorted(collected), skipped=skipped)
 
     def _matches_at_or_below(self, path: Path, include_root: Path) -> bool:

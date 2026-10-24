@@ -21,7 +21,8 @@ from pathlib import Path
 
 from .errors import EvidenceError, EvidenceInvalid, ToolFailure, UsageError
 from .fsutil import sha256_file
-from .signing import SignatureResult, verify as verify_signature
+from .signing import SignatureResult
+from .signing import verify as verify_signature
 
 MAX_UNPACKED_BYTES = 4 * 1024 * 1024 * 1024  # 4 GiB，防解压炸弹
 
@@ -121,7 +122,9 @@ def check_manifest(root: Path) -> int:
 
     unexpected = sorted(set(found) - set(expected))
     if unexpected:
-        raise EvidenceInvalid(f"bundle 含 manifest 未声明的文件：{', '.join(unexpected)}")
+        raise EvidenceInvalid(
+            f"bundle 含 manifest 未声明的文件：{', '.join(unexpected)}"
+        )
 
     missing = sorted(set(expected) - set(found))
     if missing:
@@ -130,7 +133,9 @@ def check_manifest(root: Path) -> int:
     for rel, digest in sorted(expected.items()):
         actual = sha256_file(found[rel])
         if actual != digest:
-            raise EvidenceInvalid(f"哈希不符：{rel}（manifest {digest}，实际 {actual}）")
+            raise EvidenceInvalid(
+                f"哈希不符：{rel}（manifest {digest}，实际 {actual}）"
+            )
     return len(expected)
 
 
@@ -142,7 +147,9 @@ def _anchor(result: VerifyResult, opts: VerifyOptions, root: Path) -> None:
     if opts.expect_sha256:
         want = _strip_comment(opts.expect_sha256)
         if len(want) != 64 or any(c not in "0123456789abcdef" for c in want):
-            raise UsageError(f"--expect-sha256 不是 64 位十六进制：{opts.expect_sha256!r}")
+            raise UsageError(
+                f"--expect-sha256 不是 64 位十六进制：{opts.expect_sha256!r}"
+            )
         actual = result.bundle_sha256
         if want != actual:
             raise EvidenceInvalid(f"锚点不符：期望 {want}，实际 {actual}")
@@ -167,7 +174,9 @@ def _anchor(result: VerifyResult, opts: VerifyOptions, root: Path) -> None:
         else:
             normalized = recorded.rstrip("/").removesuffix(".git")
             if not (normalized == want_repo or normalized.endswith("/" + want_repo)):
-                raise EvidenceInvalid(f"锚点不符：期望仓库 {want_repo}，包内记录 {recorded}")
+                raise EvidenceInvalid(
+                    f"锚点不符：期望仓库 {want_repo}，包内记录 {recorded}"
+                )
             result.anchored = True
 
 
@@ -177,7 +186,9 @@ def _recorded_remote(root: Path) -> str | None:
     if not git_json.is_file():
         return None
     try:
-        return json.loads(git_json.read_text(encoding="utf-8")).get("remote_url") or None
+        return (
+            json.loads(git_json.read_text(encoding="utf-8")).get("remote_url") or None
+        )
     except json.JSONDecodeError:
         return None
 
@@ -202,12 +213,18 @@ def _read_run_meta(root: Path) -> tuple[str | None, int | None]:
     if run_file.is_file():
         try:
             run = json.loads(run_file.read_text(encoding="utf-8"))
-            repo = run.get("github_repository") or run.get("cnb_repo_slug") or run.get("gitlab_project_path")
+            repo = (
+                run.get("github_repository")
+                or run.get("cnb_repo_slug")
+                or run.get("gitlab_project_path")
+            )
         except json.JSONDecodeError:
             pass
     if meta_file.is_file():
         try:
-            epoch = json.loads(meta_file.read_text(encoding="utf-8")).get("source_date_epoch")
+            epoch = json.loads(meta_file.read_text(encoding="utf-8")).get(
+                "source_date_epoch"
+            )
         except json.JSONDecodeError:
             pass
     return repo, epoch
@@ -218,7 +235,9 @@ def _verify_once(opts: VerifyOptions) -> VerifyResult:
     if not bundle_path.is_file():
         raise UsageError(f"bundle 不存在：{bundle_path}")
 
-    result = VerifyResult(bundle_path=str(bundle_path), bundle_sha256=sha256_file(bundle_path))
+    result = VerifyResult(
+        bundle_path=str(bundle_path), bundle_sha256=sha256_file(bundle_path)
+    )
 
     with tempfile.TemporaryDirectory(prefix="evidence-verify-") as tmp:
         root = Path(tmp)

@@ -19,14 +19,21 @@ from evidence_pack.errors import EvidenceInvalid, ToolFailure, UsageError
 from evidence_pack.signing import sign, verify
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("sh") is None or os.name != "posix", reason="需要 POSIX shell 造假的 cosign"
+    shutil.which("sh") is None or os.name != "posix",
+    reason="需要 POSIX shell 造假的 cosign",
 )
 
 IDENTITY = "https://github.com/org/repo/.github/workflows/ci.yml@refs/heads/main"
 ISSUER = "https://token.actions.githubusercontent.com"
-TOKEN = "a" * 120 + "." + base64.urlsafe_b64encode(
-    json.dumps({"sub": IDENTITY, "iss": ISSUER}).encode()
-).decode().rstrip("=") + "." + "c" * 60
+TOKEN = (
+    "a" * 120
+    + "."
+    + base64.urlsafe_b64encode(json.dumps({"sub": IDENTITY, "iss": ISSUER}).encode())
+    .decode()
+    .rstrip("=")
+    + "."
+    + "c" * 60
+)
 
 BLOB = b"evidence"
 
@@ -46,15 +53,19 @@ def _bundle(digest_of: bytes = BLOB, *, cert: bool = True, tlog: bool = True) ->
         material["x509CertificateChain"] = {"certificates": [{"rawBytes": ""}]}
     if tlog:
         material["tlogEntries"] = [{"integratedTime": "1700000000"}]
-    return json.dumps({
-        "messageSignature": {
-            "messageDigest": {
-                "algorithm": "SHA2_256",
-                "digest": base64.b64encode(hashlib.sha256(digest_of).digest()).decode(),
-            }
-        },
-        "verificationMaterial": material,
-    })
+    return json.dumps(
+        {
+            "messageSignature": {
+                "messageDigest": {
+                    "algorithm": "SHA2_256",
+                    "digest": base64.b64encode(
+                        hashlib.sha256(digest_of).digest()
+                    ).decode(),
+                }
+            },
+            "verificationMaterial": material,
+        }
+    )
 
 
 @pytest.fixture
@@ -70,7 +81,7 @@ def signed(tmp_path: Path, blob: Path, monkeypatch) -> tuple[Path, Path]:
     bundle = tmp_path / "blob.sigstore.json"
     fake = _fake_cosign(
         tmp_path,
-        f'cat > "{bundle}" <<\'BUNDLE\'\n{_bundle()}\nBUNDLE\nexit 0\n',
+        f"cat > \"{bundle}\" <<'BUNDLE'\n{_bundle()}\nBUNDLE\nexit 0\n",
     )
     monkeypatch.setenv("PATH", f"{fake}:{os.environ['PATH']}")
     sign(blob, bundle, oidc_token=TOKEN)
@@ -130,7 +141,9 @@ def test_verify_tampered_blob_is_evidence_invalid(signed, tmp_path, monkeypatch)
         verify(tampered, bundle, identity=IDENTITY, issuer=ISSUER)
 
 
-def test_fake_cosign_exit_zero_but_no_output_is_tool_failure(signed, tmp_path, monkeypatch):
+def test_fake_cosign_exit_zero_but_no_output_is_tool_failure(
+    signed, tmp_path, monkeypatch
+):
     blob, bundle = signed
     _fake_cosign(tmp_path, "exit 0\n")
     with pytest.raises(ToolFailure, match="Verified OK"):
@@ -167,7 +180,9 @@ def test_garbage_bundle_is_tool_failure(tmp_path, blob, monkeypatch):
         verify(blob, junk, identity=IDENTITY, issuer=ISSUER)
 
 
-def test_bundle_without_tlog_is_invalid_even_if_cosign_says_ok(tmp_path, blob, monkeypatch):
+def test_bundle_without_tlog_is_invalid_even_if_cosign_says_ok(
+    tmp_path, blob, monkeypatch
+):
     """cosign 说 OK 也不够：keyless 的 bundle 必须有 tlog 落点。"""
     bundle = tmp_path / "b.sigstore.json"
     bundle.write_text(_bundle(tlog=False))

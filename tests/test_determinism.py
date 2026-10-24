@@ -17,8 +17,12 @@ def test_pack_is_byte_identical_across_runs(tmp_path, monkeypatch):
     repo = _repo(tmp_path)
     # 确定性只跟「输入 + SOURCE_DATE_EPOCH」有关；签名要连外部服务，这里显式关掉。
     opts = lambda out: PackOptions(  # noqa: E731
-        repo_root=repo, out_dir=tmp_path / out, includes=["src"], sbom="none",
-        collect_git=False, sign=False,
+        repo_root=repo,
+        out_dir=tmp_path / out,
+        includes=["src"],
+        sbom="none",
+        collect_git=False,
+        sign=False,
     )
     first = pack(opts("out1"))
     second = pack(opts("out2"))

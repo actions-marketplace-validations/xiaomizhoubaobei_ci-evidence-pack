@@ -16,10 +16,16 @@ def _packed(tmp_path: Path, monkeypatch) -> Path:
     (repo / "src").mkdir(parents=True)
     (repo / "src" / "a.txt").write_text("original")
     # 这些用例验的是「无签名时只有包外锚点才算证据」，所以显式关掉签名。
-    result = pack(PackOptions(
-        repo_root=repo, out_dir=tmp_path / "out", includes=["src"], sbom="none",
-        collect_git=False, sign=False,
-    ))
+    result = pack(
+        PackOptions(
+            repo_root=repo,
+            out_dir=tmp_path / "out",
+            includes=["src"],
+            sbom="none",
+            collect_git=False,
+            sign=False,
+        )
+    )
     return Path(result.bundle_path)
 
 
@@ -59,7 +65,9 @@ def test_bad_anchor_format_is_usage_error(tmp_path, monkeypatch):
         verify(VerifyOptions(bundle_path=bundle, expect_sha256="not-a-hash"))
 
 
-def test_forged_bundle_with_recomputed_manifest_is_caught_by_anchor(tmp_path, monkeypatch):
+def test_forged_bundle_with_recomputed_manifest_is_caught_by_anchor(
+    tmp_path, monkeypatch
+):
     bundle = _packed(tmp_path, monkeypatch)
     real_sha = __import__("hashlib").sha256(bundle.read_bytes()).hexdigest()
 
@@ -72,6 +80,7 @@ def test_forged_bundle_with_recomputed_manifest_is_caught_by_anchor(tmp_path, mo
     for p in sorted(work.rglob("*")):
         if p.is_file() and p.name != "sha256sum.txt":
             import hashlib
+
             rel = p.relative_to(work).as_posix()
             lines.append(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {rel}")
     (work / "manifest" / "sha256sum.txt").write_text("\n".join(lines) + "\n")
@@ -91,8 +100,14 @@ def test_forged_bundle_with_recomputed_manifest_is_caught_by_anchor(tmp_path, mo
 
 @pytest.mark.parametrize("kind", ["absolute", "traversal", "symlink", "hardlink"])
 def test_malicious_tar_is_rejected(tmp_path, kind):
-    m = tarfile.TarInfo({"absolute": "/etc/passwd", "traversal": "../x",
-                         "symlink": "link", "hardlink": "hlink"}[kind])
+    m = tarfile.TarInfo(
+        {
+            "absolute": "/etc/passwd",
+            "traversal": "../x",
+            "symlink": "link",
+            "hardlink": "hlink",
+        }[kind]
+    )
     if kind in ("symlink", "hardlink"):
         m.type = tarfile.SYMTYPE if kind == "symlink" else tarfile.LNKTYPE
         m.linkname = "/etc/passwd"
@@ -101,6 +116,7 @@ def test_malicious_tar_is_rejected(tmp_path, kind):
         m.size = 1
     evil = _evil(tmp_path, [m])
     import hashlib
+
     sha = hashlib.sha256(evil.read_bytes()).hexdigest()
     with pytest.raises(EvidenceInvalid):
         verify(VerifyOptions(bundle_path=evil, expect_sha256=sha))
@@ -131,25 +147,35 @@ def _packed_with_remote(tmp_path: Path, monkeypatch, remote: str) -> Path:
         ["remote", "add", "origin", remote],
     ):
         subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
-    result = pack(PackOptions(
-        repo_root=repo, out_dir=tmp_path / "out", includes=["src"], sbom="none", sign=False
-    ))
+    result = pack(
+        PackOptions(
+            repo_root=repo,
+            out_dir=tmp_path / "out",
+            includes=["src"],
+            sbom="none",
+            sign=False,
+        )
+    )
     return Path(result.bundle_path)
 
 
 def test_expect_repo_matches_recorded_remote(tmp_path, monkeypatch):
-    bundle = _packed_with_remote(tmp_path, monkeypatch, "https://github.com/acme/app.git")
+    bundle = _packed_with_remote(
+        tmp_path, monkeypatch, "https://github.com/acme/app.git"
+    )
     sha = __import__("hashlib").sha256(bundle.read_bytes()).hexdigest()
-    result = verify(VerifyOptions(
-        bundle_path=bundle, expect_sha256=sha, expect_repo="acme/app"
-    ))
+    result = verify(
+        VerifyOptions(bundle_path=bundle, expect_sha256=sha, expect_repo="acme/app")
+    )
     assert result.anchored
     assert result.anchor_warnings == []
 
 
 def test_expect_repo_mismatch_is_invalid(tmp_path, monkeypatch):
     """包内记的仓库和期望的不一样 —— 这是真的对不上，必须判 2。"""
-    bundle = _packed_with_remote(tmp_path, monkeypatch, "https://github.com/evil/app.git")
+    bundle = _packed_with_remote(
+        tmp_path, monkeypatch, "https://github.com/evil/app.git"
+    )
     with pytest.raises(EvidenceInvalid, match="锚点不符"):
         verify(VerifyOptions(bundle_path=bundle, expect_repo="acme/app"))
 
@@ -163,9 +189,9 @@ def test_expect_repo_without_remote_metadata_is_not_tampering(tmp_path, monkeypa
     """
     bundle = _packed(tmp_path, monkeypatch)  # collect_git=False，包里根本没有 git.json
     sha = __import__("hashlib").sha256(bundle.read_bytes()).hexdigest()
-    result = verify(VerifyOptions(
-        bundle_path=bundle, expect_sha256=sha, expect_repo="acme/app"
-    ))
+    result = verify(
+        VerifyOptions(bundle_path=bundle, expect_sha256=sha, expect_repo="acme/app")
+    )
     assert result.ok and result.exit_code == 0
     # sha 锚点照样生效，但 repo 这条锚点没起作用，必须说出来。
     assert result.anchored

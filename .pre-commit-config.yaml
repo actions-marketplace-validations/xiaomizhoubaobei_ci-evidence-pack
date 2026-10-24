@@ -1,0 +1,71 @@
+# 提交前门禁。首次启用：`pip install pre-commit && pre-commit install`；
+# 全量跑一遍：`pre-commit run --all-files`。
+#
+# 与 install_gpg_keys.sh 的分工：那边管「提交有没有签名」，这边管「代码长什么样」，
+# 两者都在本地跑，不依赖平台。CI 不做重复构建（见 .cnb.yml 的说明）。
+#
+# 各 rev 均已核对为上游真实 tag，不要凭记忆改。
+repos:
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v6.0.0
+  hooks:
+  - id: end-of-file-fixer
+  - id: trailing-whitespace
+  - id: check-yaml
+  - id: check-json
+  - id: check-toml
+  - id: check-added-large-files
+    args: ['--maxkb=10000']
+  - id: detect-private-key
+  - id: check-case-conflict
+  - id: check-merge-conflict
+  - id: check-symlinks
+  - id: mixed-line-ending
+    args: ['--fix=lf']
+
+- repo: https://github.com/psf/black-pre-commit-mirror
+  rev: 26.3.0
+  hooks:
+  - id: black
+    # 不绑 language_version：任一本机 Python 3.10+ 均可跑通。
+    # 目标版本取 py312 而非 3.10，只为不把 3.10 之后的语法判为错误；
+    # 真正的最低版本约束由 pyproject 的 requires-python 负责。
+    args: ['--target-version', 'py312']
+
+- repo: https://github.com/pycqa/flake8
+  rev: 7.4.1
+  hooks:
+  - id: flake8
+    # 行长/ignore 与 per-file-ignores 一并写在 .flake8，命令行长参数只留指向它的引用，
+    # 避免「配置文件里改了、这里没改」两边打架。
+
+- repo: https://github.com/pycqa/isort
+  rev: 9.0.2
+  hooks:
+  - id: isort
+    # 9.0.2 是 isort 首个 requires-python>=3.10 的稳定版，与本项目最低版本对齐；
+    # 10.0.0b1 要求 >=3.11，在 3.10 环境下装不上（实测直接报错）。
+    args: ['--profile', 'black']
+
+- repo: https://github.com/pre-commit/mirrors-mypy
+  rev: v2.4.0
+  hooks:
+  - id: mypy
+    # 本工具的外部命令一律走 subprocess，不 import typer 之外的三方库；
+    # 缺类型存根的三方包（如 typer）按 ignore_missing_imports 放过。
+    args: ['--ignore-missing-imports']
+
+- repo: https://github.com/pycqa/pydocstyle
+  rev: 6.3.0
+  hooks:
+  - id: pydocstyle
+    # --add-ignore 必须留在命令行：本仓库文档一律中文、句末是全角「。」，
+    # 而 google 约定只认半角收尾。约定会把配置文件里的 ignore 覆盖回去，
+    # 只有命令行的 --add-ignore 能压过它（实测过，别挪回 .pydocstyle）。
+    # 其余 D1xx（缺 docstring 等）照常拦。
+    # D403 也一并关掉：它要求首行首词「大写开头」，那是英文语序的假设。
+    # 中文 docstring 常以指令名起句（「token 与私有地址都经环境变量下发」），
+    # 强行大写 `token` → `Token` 是在改专有名词，不是在改文档质量。
+    args: ['--convention=google', '--add-ignore=D400,D403,D415']
+    # files 限定 src/：只对被测代码提文档要求，夹具没有「公开 API 文档」义务。
+    files: '^src/'

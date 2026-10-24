@@ -1,0 +1,8 @@
+# 本文件刻意留空（除说明外）。
+#
+# 中文 docstring 的句号形态豁免**不能**写在这里：
+# pydocstyle 的配置是「命令行 > 配置文件」，而 hook 传了 --convention=google，
+# 约定要求的规则会把配置文件里的 ignore / add-ignore 覆盖回去（实测：
+# 配置写 add-ignore=D415 时 D400 冒出来，写 ignore 时 D415 又冒出来）。
+# 所以豁免放在 .pre-commit-config.yaml 的 args 里，用 --add-ignore 压过约定。
+[pydocstyle]

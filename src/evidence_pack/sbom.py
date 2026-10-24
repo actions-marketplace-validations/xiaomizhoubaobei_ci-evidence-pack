@@ -28,7 +28,10 @@ SUPPORTED = ("auto", "none", "python", "node")
 
 
 def detect_kind(repo_root: Path) -> str | None:
-    if any((repo_root / f).exists() for f in ("pyproject.toml", "setup.py", "requirements.txt", "poetry.lock")):
+    if any(
+        (repo_root / f).exists()
+        for f in ("pyproject.toml", "setup.py", "requirements.txt", "poetry.lock")
+    ):
         return "python"
     if (repo_root / "package.json").exists():
         return "node"
@@ -112,13 +115,17 @@ def _python_cmd(repo_root: Path) -> list[str]:
         return [py, "poetry", "--output-format", "json"]
     if (repo_root / "requirements.txt").exists():
         return [py, "requirements", "--output-format", "json"]
-    raise ToolFailure("Python 项目既无 poetry.lock 也无 requirements.txt，无法确定要扫描的依赖清单。")
+    raise ToolFailure(
+        "Python 项目既无 poetry.lock 也无 requirements.txt，无法确定要扫描的依赖清单。"
+    )
 
 
 def _node_cmd(repo_root: Path) -> list[str]:
     npm = shutil.which("cyclonedx-npm")
     if not npm:
-        raise ToolFailure("需要 cyclonedx-npm 生成 Node SBOM（npm i -g @cyclonedx/cyclonedx-npm）。")
+        raise ToolFailure(
+            "需要 cyclonedx-npm 生成 Node SBOM（npm i -g @cyclonedx/cyclonedx-npm）。"
+        )
     return [npm, "--output-format", "JSON"]
 
 
@@ -166,7 +173,9 @@ def _requirements_sbom(text: str, *, source: str = "requirements.txt") -> dict:
         "version": 1,
         "metadata": {
             "component": {"type": "application", "name": source},
-            "tools": [{"name": "evidence-pack/dependency-fallback", "version": __version__}],
+            "tools": [
+                {"name": "evidence-pack/dependency-fallback", "version": __version__}
+            ],
         },
         "components": _parse_requirements(text),
     }
@@ -194,10 +203,9 @@ def _normalize(parsed: dict, epoch: int | None) -> dict:
     if isinstance(meta, dict):
         meta.pop("timestamp", None)
         if epoch is not None:
-            meta["timestamp"] = (
-                _dt.datetime.fromtimestamp(epoch, _dt.timezone.utc)
-                .strftime("%Y-%m-%dT%H:%M:%SZ")
-            )
+            meta["timestamp"] = _dt.datetime.fromtimestamp(
+                epoch, _dt.timezone.utc
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # 序列号按内容派生：内容变则号变，内容不变则号不变。
     fingerprint = _hl.sha256(stable_json_bytes(parsed)).hexdigest()
@@ -211,7 +219,9 @@ def _write(out_path: Path, parsed: dict, epoch: int | None = None) -> None:
     out_path.write_bytes(stable_json_bytes(_normalize(parsed, epoch)))
 
 
-def generate(repo_root: Path, choice: str, out_path: Path, *, epoch: int | None = None) -> str:
+def generate(
+    repo_root: Path, choice: str, out_path: Path, *, epoch: int | None = None
+) -> str:
     """返回实际使用的扫描方式；"none" 表示没产。
 
     `epoch` 是打包使用的 SOURCE_DATE_EPOCH，用来把扫描器自带的时间戳
@@ -231,7 +241,9 @@ def generate(repo_root: Path, choice: str, out_path: Path, *, epoch: int | None 
     else:
         # 只挡掉「认出了另一种语言」的明确冲突；认不出来时交给下面的扫描器兜底。
         if kind is not None and kind != choice:
-            raise UsageError(f"--sbom {choice} 与项目类型不符：{repo_root} 认出来的是 {kind} 项目。")
+            raise UsageError(
+                f"--sbom {choice} 与项目类型不符：{repo_root} 认出来的是 {kind} 项目。"
+            )
 
     if choice == "python":
         try:
@@ -241,11 +253,17 @@ def generate(repo_root: Path, choice: str, out_path: Path, *, epoch: int | None 
             # requirements.txt（最贴近真实安装）→ pyproject.toml（PEP 621）。
             text = _requirements_text(repo_root)
             if text is not None:
-                _write(out_path, _requirements_sbom(text, source="requirements.txt"), epoch)
+                _write(
+                    out_path, _requirements_sbom(text, source="requirements.txt"), epoch
+                )
                 return "python"
             specs = _pyproject_requirements(repo_root)
             if specs is not None:
-                _write(out_path, _requirements_sbom("\n".join(specs), source="pyproject.toml"), epoch)
+                _write(
+                    out_path,
+                    _requirements_sbom("\n".join(specs), source="pyproject.toml"),
+                    epoch,
+                )
                 return "python"
             # 明确要了却拿不到：退出码 3，绝不静默出个空 SBOM。
             raise

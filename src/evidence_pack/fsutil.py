@@ -37,7 +37,9 @@ def sha256_bytes(data: bytes) -> str:
 
 def stable_json_bytes(data: Any) -> bytes:
     """JSON 的唯一正确写法：键排序、缩进 2、UTF-8 不转义、结尾换行。"""
-    return (json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
+    return (
+        json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    ).encode("utf-8")
 
 
 def write_stable_json(path: Path, data: Any) -> None:
@@ -120,11 +122,16 @@ def build_tar_gz(stage_dir: Path, mtime: int) -> bytes:
     with tarfile.open(fileobj=raw, mode="w", format=tarfile.PAX_FORMAT) as tar:
         for path in entries:
             arcname = path.relative_to(stage_dir).as_posix()
-            tar.add(path, arcname=arcname, recursive=False,
-                    filter=lambda ti: normalize_tarinfo(ti, mtime))
+            tar.add(
+                path,
+                arcname=arcname,
+                recursive=False,
+                filter=lambda ti: normalize_tarinfo(ti, mtime),
+            )
 
     packed = io.BytesIO()
-    with gzip.GzipFile(filename="", mode="wb", fileobj=packed, mtime=0,
-                       compresslevel=6) as gz:
+    with gzip.GzipFile(
+        filename="", mode="wb", fileobj=packed, mtime=0, compresslevel=6
+    ) as gz:
         gz.write(raw.getvalue())
     return packed.getvalue()

@@ -50,7 +50,7 @@ DEFAULT_BUNDLE_SUFFIX = ".sigstore.json"
 class SignatureResult:
     signed: bool = False
     verified: bool = False
-    mode: str | None = None            # 只有 "keyless"（OIDC 短期证书）
+    mode: str | None = None  # 只有 "keyless"（OIDC 短期证书）
     tlog_checked: bool = False
     bundle_path: str | None = None
     # 这张证书就是本次签名的短期身份，过期即失效。
@@ -96,7 +96,7 @@ def _first_error(proc: subprocess.CompletedProcess) -> str:
     ]
     for text in lines:
         if text.startswith(_ERROR_PREFIX):
-            return text[len(_ERROR_PREFIX):]
+            return text[len(_ERROR_PREFIX) :]
     for text in lines:
         if text.startswith("error during command execution:"):
             continue
@@ -106,7 +106,9 @@ def _first_error(proc: subprocess.CompletedProcess) -> str:
     return "未知错误"
 
 
-def _run(cmd: list[str], extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+def _run(
+    cmd: list[str], extra_env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess:
     """跑 cosign。
 
     token 走 SIGSTORE_ID_TOKEN 环境变量，不拼进 argv。stdin 一律接 DEVNULL：
@@ -116,8 +118,14 @@ def _run(cmd: list[str], extra_env: dict[str, str] | None = None) -> subprocess.
     if extra_env:
         env.update(extra_env)
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, check=False, env=env,
-                              stdin=subprocess.DEVNULL)
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            stdin=subprocess.DEVNULL,
+        )
     except OSError as exc:
         raise ToolFailure(f"cosign 无法执行：{exc}") from exc
 
@@ -131,18 +139,24 @@ DEFAULT_REKOR_URL = "https://rekor.sigstore.dev"
 MIN_TOKEN_LEN = 100
 
 
-def resolve_oidc_token(token: str | None = None, token_env: str | None = None) -> str | None:
+def resolve_oidc_token(
+    token: str | None = None, token_env: str | None = None
+) -> str | None:
     """取 OIDC token：显式值优先，其次按环境变量名读。
 
     刻意不对空串宽容：CI 里 token 变量存在但为空（权限没开、secret 没配）
     是最常见的事故，静默回落到"没 token"会让调用方以为签过了。
     """
     if token and token_env:
-        raise UsageError("--oidc-token 与 --oidc-token-env 只给一个：token 不该有两条来源。")
+        raise UsageError(
+            "--oidc-token 与 --oidc-token-env 只给一个：token 不该有两条来源。"
+        )
     if token_env:
         value = os.environ.get(token_env)
         if not value:
-            raise UsageError(f"环境变量 {token_env} 不存在或为空：拿不到 OIDC token，无法换短期证书。")
+            raise UsageError(
+                f"环境变量 {token_env} 不存在或为空：拿不到 OIDC token，无法换短期证书。"
+            )
         return _check_token_shape(value, f"环境变量 {token_env}")
     if token:
         return _check_token_shape(token, "--oidc-token")
@@ -158,7 +172,9 @@ def _check_token_shape(token: str, source: str) -> str:
     """
     compact = token.strip()
     if len(compact) < MIN_TOKEN_LEN or compact.count(".") != 2:
-        raise UsageError(f"{source} 看起来不是 OIDC JWT（需要三段式且长度 >= {MIN_TOKEN_LEN}）。")
+        raise UsageError(
+            f"{source} 看起来不是 OIDC JWT（需要三段式且长度 >= {MIN_TOKEN_LEN}）。"
+        )
     return compact
 
 
@@ -177,7 +193,9 @@ def _decode_jwt_claims(token: str) -> dict:
     return claims if isinstance(claims, dict) else {}
 
 
-def _keyless_env(token: str, *, fulcio_url: str | None, rekor_url: str | None) -> dict[str, str]:
+def _keyless_env(
+    token: str, *, fulcio_url: str | None, rekor_url: str | None
+) -> dict[str, str]:
     """token 与私有实例地址都经环境变量下发，argv 里只留非敏感开关。"""
     env = {"SIGSTORE_ID_TOKEN": token}
     if fulcio_url:
@@ -190,7 +208,9 @@ def _keyless_env(token: str, *, fulcio_url: str | None, rekor_url: str | None) -
 def _require_identity(identity: str | None, issuer: str | None) -> None:
     """没有期望身份就等于没验：前移到本地拦下，不把宽松判断交给 cosign。"""
     if not identity or not issuer:
-        raise UsageError("必须同时提供 --identity 与 --issuer，否则等于接受任何人的签名。")
+        raise UsageError(
+            "必须同时提供 --identity 与 --issuer，否则等于接受任何人的签名。"
+        )
 
 
 # 判定「是不是 sign: false」只认这一个字面量。它同时被 Action 的 shell 层与内核用到：
@@ -208,8 +228,14 @@ def is_sign_off(value: str | None) -> bool:
     return (value or "").strip() == SIGN_OFF_LITERAL
 
 
-def sign(blob: Path, bundle: Path, *, oidc_token: str | None = None,
-         fulcio_url: str | None = None, rekor_url: str | None = None) -> SignatureResult:
+def sign(
+    blob: Path,
+    bundle: Path,
+    *,
+    oidc_token: str | None = None,
+    fulcio_url: str | None = None,
+    rekor_url: str | None = None,
+) -> SignatureResult:
     """用 OIDC 换来的短期证书对 blob 签名，产出 `.sigstore.json`。
 
     没有别的路径可选：token 缺失当场判 1，不把「没 token」这种用法问题
@@ -282,7 +308,9 @@ def _fill_cert_window(result: SignatureResult, leaf: dict) -> None:
         der = base64.b64decode(raw)
         proc = subprocess.run(
             [exe, "x509", "-inform", "DER", "-noout", "-startdate", "-enddate"],
-            input=der, capture_output=True, check=False,
+            input=der,
+            capture_output=True,
+            check=False,
         )
     except (OSError, ValueError, TypeError):
         return
@@ -302,9 +330,11 @@ def _iso8601(value: str) -> str:
     from datetime import datetime, timezone
 
     try:
-        return datetime.strptime(value, "%b %d %H:%M:%S %Y %Z").replace(
-            tzinfo=timezone.utc
-        ).isoformat()
+        return (
+            datetime.strptime(value, "%b %d %H:%M:%S %Y %Z")
+            .replace(tzinfo=timezone.utc)
+            .isoformat()
+        )
     except ValueError:
         return value
 
@@ -317,7 +347,9 @@ def _check_bundle_structure(bundle: Path) -> dict:
     if not isinstance(data, dict):
         raise ToolFailure("bundle 顶层不是对象，不是 Sigstore bundle。")
     if "messageSignature" not in data and "dsseEnvelope" not in data:
-        raise ToolFailure("bundle 里没有 messageSignature / dsseEnvelope，不是签名 bundle。")
+        raise ToolFailure(
+            "bundle 里没有 messageSignature / dsseEnvelope，不是签名 bundle。"
+        )
     return data
 
 
@@ -376,9 +408,16 @@ def verify(
             f"bundle 的内容摘要与文件不符：bundle 绑定 {bound}，文件实际 {actual}。"
         )
 
-    cmd = [cosign, "verify-blob", "--bundle", str(bundle),
-           "--certificate-identity", identity or "",
-           "--certificate-oidc-issuer", issuer or ""]
+    cmd = [
+        cosign,
+        "verify-blob",
+        "--bundle",
+        str(bundle),
+        "--certificate-identity",
+        identity or "",
+        "--certificate-oidc-issuer",
+        issuer or "",
+    ]
     if ignore_tlog:
         cmd.append("--insecure-ignore-tlog=true")
     cmd.append(str(blob))
@@ -399,7 +438,9 @@ def verify(
 
     tlog_present = _has_tlog(data)
     if not ignore_tlog and not tlog_present:
-        raise EvidenceInvalid("验签通过但 bundle 内无透明日志条目（tlogEntries 为空）。")
+        raise EvidenceInvalid(
+            "验签通过但 bundle 内无透明日志条目（tlogEntries 为空）。"
+        )
 
     result = SignatureResult(
         verified=True,
@@ -468,7 +509,9 @@ def _cert_window(leaf: dict) -> tuple[int, int] | None:
         der = base64.b64decode(raw)
         proc = subprocess.run(
             [exe, "x509", "-inform", "DER", "-noout", "-startdate", "-enddate"],
-            input=der, capture_output=True, check=False,
+            input=der,
+            capture_output=True,
+            check=False,
         )
     except (OSError, ValueError, TypeError):
         return None

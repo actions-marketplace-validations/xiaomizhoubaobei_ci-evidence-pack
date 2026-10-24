@@ -19,7 +19,8 @@ SCRIPTS = ROOT / "scripts"
 COSIGN = shutil.which("cosign")
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("bash") is None or shutil.which("git") is None, reason="需要 bash 与 git"
+    shutil.which("bash") is None or shutil.which("git") is None,
+    reason="需要 bash 与 git",
 )
 
 
@@ -37,8 +38,20 @@ def _repo(tmp_path: Path) -> Path:
         # 常常全局开了 commit.gpgsign，夹具用临时身份造的仓库没有对应私钥，
         # 一提交就 gpg failed to sign the data —— 那不是被测代码的问题，
         # 却会让每个人的本地跑出一片红。
-        ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
-         "-c", "commit.gpgsign=false", "commit", "-qm", "init"],
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "init",
+        ],
         check=True,
     )
     return repo
@@ -46,23 +59,25 @@ def _repo(tmp_path: Path) -> Path:
 
 def _env(tmp_path: Path, **overrides) -> dict:
     env = {k: v for k, v in os.environ.items() if not k.startswith("INPUT_")}
-    env.update({
-        "PATH": os.environ["PATH"],
-        "ACTION_PATH": str(ROOT),
-        "REPO_ROOT": str(tmp_path / "repo"),
-        "GITHUB_OUTPUT": str(tmp_path / "out.txt"),
-        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
-        "INPUT_INCLUDE": "dist/\n# 注释与空行要忽略\n\nconfigs/app.yml\n",
-        "INPUT_SBOM": "auto",
-        "INPUT_OUT_DIR": str(tmp_path / "out"),
-        # 默认与 action.yml 一致（sign: 'true'）。想不签名必须显式传 "false"，
-        # 别把测试的默认值和真实默认值写成两件事。
-        "INPUT_SIGN": "true",
-        "INPUT_ISSUER": "",
-        "INPUT_IDENTITY": "",
-        "INPUT_BUNDLE_NAME": "",
-        "INPUT_EXCLUDE": "",
-    })
+    env.update(
+        {
+            "PATH": os.environ["PATH"],
+            "ACTION_PATH": str(ROOT),
+            "REPO_ROOT": str(tmp_path / "repo"),
+            "GITHUB_OUTPUT": str(tmp_path / "out.txt"),
+            "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+            "INPUT_INCLUDE": "dist/\n# 注释与空行要忽略\n\nconfigs/app.yml\n",
+            "INPUT_SBOM": "auto",
+            "INPUT_OUT_DIR": str(tmp_path / "out"),
+            # 默认与 action.yml 一致（sign: 'true'）。想不签名必须显式传 "false"，
+            # 别把测试的默认值和真实默认值写成两件事。
+            "INPUT_SIGN": "true",
+            "INPUT_ISSUER": "",
+            "INPUT_IDENTITY": "",
+            "INPUT_BUNDLE_NAME": "",
+            "INPUT_EXCLUDE": "",
+        }
+    )
     env.update(overrides)
     return env
 
@@ -74,7 +89,11 @@ def _outputs(tmp_path: Path) -> dict:
 
 def _run(script: str, env: dict) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["bash", str(SCRIPTS / script)], capture_output=True, text=True, env=env, check=False,
+        ["bash", str(SCRIPTS / script)],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
         cwd=str(Path(env["GITHUB_OUTPUT"]).parent),
     )
 
@@ -100,10 +119,14 @@ def test_pack_writes_outputs_and_ignores_comment_lines(tmp_path):
 
 def test_pack_is_reproducible_for_the_same_commit(tmp_path):
     _repo(tmp_path)
-    first = _run("action-pack.sh", _unsigned(tmp_path, INPUT_OUT_DIR=str(tmp_path / "o1")))
+    first = _run(
+        "action-pack.sh", _unsigned(tmp_path, INPUT_OUT_DIR=str(tmp_path / "o1"))
+    )
     assert first.returncode == 0, first.stderr
     sha1 = _outputs(tmp_path)["bundle-sha256"]
-    second = _run("action-pack.sh", _unsigned(tmp_path, INPUT_OUT_DIR=str(tmp_path / "o2")))
+    second = _run(
+        "action-pack.sh", _unsigned(tmp_path, INPUT_OUT_DIR=str(tmp_path / "o2"))
+    )
     assert second.returncode == 0, second.stderr
     assert _outputs(tmp_path)["bundle-sha256"] == sha1
 
@@ -119,9 +142,14 @@ def test_verify_passes_with_matching_anchor(tmp_path):
     _repo(tmp_path)
     assert _run("action-pack.sh", _unsigned(tmp_path)).returncode == 0
     out = _outputs(tmp_path)
-    proc = _run("action-verify.sh", _unsigned(
-        tmp_path, INPUT_BUNDLE=out["bundle-path"], INPUT_EXPECT_SHA256=out["bundle-sha256"]
-    ))
+    proc = _run(
+        "action-verify.sh",
+        _unsigned(
+            tmp_path,
+            INPUT_BUNDLE=out["bundle-path"],
+            INPUT_EXPECT_SHA256=out["bundle-sha256"],
+        ),
+    )
     assert proc.returncode == 0, proc.stdout
     verified = _outputs(tmp_path)
     assert verified["ok"] == "true" and verified["anchored"] == "true"
@@ -131,9 +159,12 @@ def test_verify_reports_2_and_never_0_when_anchor_mismatches(tmp_path):
     _repo(tmp_path)
     assert _run("action-pack.sh", _unsigned(tmp_path)).returncode == 0
     out = _outputs(tmp_path)
-    proc = _run("action-verify.sh", _unsigned(
-        tmp_path, INPUT_BUNDLE=out["bundle-path"], INPUT_EXPECT_SHA256="a" * 64
-    ))
+    proc = _run(
+        "action-verify.sh",
+        _unsigned(
+            tmp_path, INPUT_BUNDLE=out["bundle-path"], INPUT_EXPECT_SHA256="a" * 64
+        ),
+    )
     assert proc.returncode == 2
     verified = _outputs(tmp_path)
     assert verified["ok"] == "false" and verified["exit-code"] == "2"
@@ -144,7 +175,9 @@ def test_verify_without_anchor_is_not_evidence(tmp_path):
     _repo(tmp_path)
     assert _run("action-pack.sh", _unsigned(tmp_path)).returncode == 0
     out = _outputs(tmp_path)
-    proc = _run("action-verify.sh", _unsigned(tmp_path, INPUT_BUNDLE=out["bundle-path"]))
+    proc = _run(
+        "action-verify.sh", _unsigned(tmp_path, INPUT_BUNDLE=out["bundle-path"])
+    )
     assert proc.returncode == 2
     assert _outputs(tmp_path)["anchored"] == "false"
 
@@ -154,17 +187,22 @@ def test_anchor_file_is_appended(tmp_path):
     assert _run("action-pack.sh", _unsigned(tmp_path)).returncode == 0
     out = _outputs(tmp_path)
     anchor = tmp_path / "anchor.txt"
-    env = _unsigned(tmp_path, INPUT_BUNDLE=out["bundle-path"], INPUT_ANCHOR_FILE=str(anchor))
+    env = _unsigned(
+        tmp_path, INPUT_BUNDLE=out["bundle-path"], INPUT_ANCHOR_FILE=str(anchor)
+    )
     assert _run("action-anchor.sh", env).returncode == 0
     assert _run("action-anchor.sh", env).returncode == 0
     lines = [line for line in anchor.read_text(encoding="utf-8").splitlines() if line]
-    assert len(lines) == 2 and all(line.startswith(out["bundle-sha256"]) for line in lines)
+    assert len(lines) == 2 and all(
+        line.startswith(out["bundle-sha256"]) for line in lines
+    )
 
 
 # ---------------------------------------------------------------------------
 # action.yml 本身：参数、outputs、步骤接线。这些错不会在脚本测试里暴露，
 # 但会让调用方 `uses:` 之后一头雾水（比如 outputs 指向不存在的 step id）。
 # ---------------------------------------------------------------------------
+
 
 def _manifest() -> dict:
     return yaml.safe_load((ROOT / "action.yml").read_text(encoding="utf-8"))
@@ -202,12 +240,14 @@ def test_verify_step_can_still_fail_the_job():
 
     反过来，任何一个让「判定失败」变成绿色结论的写法都是 bug。
     """
-    steps = {step.get("id"): step for step in _manifest()["runs"]["steps"] if step.get("id")}
+    steps = {
+        step.get("id"): step for step in _manifest()["runs"]["steps"] if step.get("id")
+    }
     verify = steps["verify"]
     assert verify.get("continue-on-error") is True
     # 用 JSON 里的判定整体换掉 process 退出码，再由 run 脚本自己决定成败。
     assert "--exit-code" in (SCRIPTS / "action-verify.sh").read_text(encoding="utf-8")
-    assert "exit \"$code\"" in verify["run"]
+    assert 'exit "$code"' in verify["run"]
 
 
 def test_every_output_has_description():
@@ -219,6 +259,7 @@ def test_every_output_has_description():
 # 端到端：按 action.yml 的 env 约定，把 pack → verify 串起来跑一遍。
 # 这是「开箱即用」最直接的证据 —— 它失败就说明用户 `uses:` 之后也会失败。
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
@@ -256,14 +297,21 @@ def _gh_outputs(path: Path) -> dict:
     if not path.is_file():
         return {}
     return dict(
-        line.split("=", 1) for line in path.read_text(encoding="utf-8").splitlines() if "=" in line
+        line.split("=", 1)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if "=" in line
     )
 
 
 def _call(script: str, env: dict, cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["bash", str(SCRIPTS / script)], capture_output=True, text=True, env=env, cwd=str(cwd),
-        check=False, stdin=subprocess.DEVNULL,
+        ["bash", str(SCRIPTS / script)],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(cwd),
+        check=False,
+        stdin=subprocess.DEVNULL,
     )
 
 
@@ -275,7 +323,9 @@ def test_repo_root_is_really_used_as_repo(workspace):
     """
     subdir = workspace / "sub"
     subdir.mkdir()
-    proc = _call("action-pack.sh", _action_env(workspace, INPUT_SIGN="false"), cwd=subdir)
+    proc = _call(
+        "action-pack.sh", _action_env(workspace, INPUT_SIGN="false"), cwd=subdir
+    )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     out = _gh_outputs(workspace.parent / "gh-output.txt")
     assert Path(out["bundle-path"]).parent == workspace / "_evidence"
@@ -283,7 +333,9 @@ def test_repo_root_is_really_used_as_repo(workspace):
 
 def test_default_excludes_still_pack_the_requested_dirs(workspace):
     """默认排除名单里有 dist，而 dist 恰恰是最常被 include 的目录。"""
-    proc = _call("action-pack.sh", _action_env(workspace, INPUT_SIGN="false"), cwd=workspace)
+    proc = _call(
+        "action-pack.sh", _action_env(workspace, INPUT_SIGN="false"), cwd=workspace
+    )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     result = json.loads((workspace / "pack-result.json").read_text(encoding="utf-8"))
     assert result["file_count"] >= 4  # git.json / metadata 等 + 三个 artifacts
@@ -303,9 +355,12 @@ def test_sign_defaults_to_true_in_the_manifest():
 
 def test_pack_then_verify_roundtrip(workspace):
     # 不签名的那条路径：信任根只能来自包外锚点，所以 verify 必须带 expect-sha256。
-    assert _call(
-        "action-pack.sh", _action_env(workspace, INPUT_SIGN="false"), cwd=workspace
-    ).returncode == 0
+    assert (
+        _call(
+            "action-pack.sh", _action_env(workspace, INPUT_SIGN="false"), cwd=workspace
+        ).returncode
+        == 0
+    )
     out = _gh_outputs(workspace.parent / "gh-output.txt")
     env = _action_env(
         workspace,
@@ -342,14 +397,19 @@ def test_action_never_mentions_private_key_paths():
 
 def test_anchor_then_upload_paths_are_real(workspace):
     """上传那一步列的三个路径必须都是真实文件，否则 artifact 会静默缺件。"""
-    assert _call(
-        "action-pack.sh", _action_env(workspace, INPUT_SIGN="false"), cwd=workspace
-    ).returncode == 0
+    assert (
+        _call(
+            "action-pack.sh", _action_env(workspace, INPUT_SIGN="false"), cwd=workspace
+        ).returncode
+        == 0
+    )
     out = _gh_outputs(workspace.parent / "gh-output.txt")
     anchor = workspace / "_evidence" / "anchor.txt"
     anchored = _call(
         "action-anchor.sh",
-        _action_env(workspace, INPUT_BUNDLE=out["bundle-path"], INPUT_ANCHOR_FILE=str(anchor)),
+        _action_env(
+            workspace, INPUT_BUNDLE=out["bundle-path"], INPUT_ANCHOR_FILE=str(anchor)
+        ),
         cwd=workspace,
     )
     assert anchored.returncode == 0, anchored.stdout + anchored.stderr
@@ -409,7 +469,8 @@ def test_example_outputs_are_real_action_outputs(path):
                 if step.get("id"):
                     ep_ids.add(step["id"])
     used_ep = {
-        m for m in re.findall(r"steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)", text)
+        m
+        for m in re.findall(r"steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)", text)
         if m[0] in ep_ids
     }
     unknown = {o for _, o in used_ep} - declared
@@ -420,6 +481,7 @@ def test_example_outputs_are_real_action_outputs(path):
 # 默认签名之后，示例与脚本之间的「开关怎么传」变成最容易出事的一段：
 # 少一个 token 就静默不签，多一个 False 就当场判 3。
 # ---------------------------------------------------------------------------
+
 
 def test_missing_oidc_endpoint_is_3_and_names_the_permission(workspace):
     """既没私钥、也没有换 token 的凭据：3，且报错要点名 id-token。"""
@@ -439,7 +501,7 @@ def test_oidc_token_is_exchanged_before_signing(workspace, tmp_path):
     import http.server
     import threading
 
-    fake_token = "h." + "p" * 120 + ".s"   # 三段式、长度过 MIN_TOKEN_LEN
+    fake_token = "h." + "p" * 120 + ".s"  # 三段式、长度过 MIN_TOKEN_LEN
     seen: list[str] = []
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -472,7 +534,7 @@ def test_oidc_token_is_exchanged_before_signing(workspace, tmp_path):
         fake.write_text(
             "#!/bin/sh\n"
             'printf "%s" "${SIGSTORE_ID_TOKEN:-}" > "$CAPTURED_TOKEN"\n'
-            "bundle=\"\"\n"
+            'bundle=""\n'
             "while [ $# -gt 0 ]; do\n"
             '  if [ "$1" = "--bundle" ]; then bundle="$2"; shift; fi\n'
             "  shift\n"
@@ -505,13 +567,18 @@ def test_oidc_request_failure_is_3_not_2(workspace):
         ACTIONS_ID_TOKEN_REQUEST_URL="http://127.0.0.1:1/oidc?x=1",  # 必然连不上
         ACTIONS_ID_TOKEN_REQUEST_TOKEN="request-token",
     )
+
+
 # keyless 换 token：`ACTIONS_ID_TOKEN_REQUEST_TOKEN` 只是换 token 的**凭据**，
 # 不是 token 本体。把它当 token 用，就是在 Fulcio 那里换回一个 401 ——
 # 现场看起来跟「id-token: write 没开」一模一样，最难查。
 # 所以这里起一个假 OIDC 端点 + 假 cosign，把链路钉死。
 # ---------------------------------------------------------------------------
 
-def _fake_oidc_server(tmp_path: Path, *, ok: bool = True) -> tuple[subprocess.Popen, str]:
+
+def _fake_oidc_server(
+    tmp_path: Path, *, ok: bool = True
+) -> tuple[subprocess.Popen, str]:
     """起一个本地假 OIDC 端点，只认 audience=sigstore。"""
     import http.server
     import threading
@@ -560,8 +627,8 @@ def _fake_cosign(tmp_path: Path, *, verify_ok: bool = True) -> Path:
     verify_body = (
         "# 状态随目录走：同一个 fakebin 既能签也能验。\n"
         '[ -f "$(dirname "$0")/verify-ok" ] && NPC_VERIFY_OK="$(cat "$(dirname "$0")/verify-ok")"\n'
-        "if [ \"$1\" = \"verify-blob\" ]; then\n"
-        "  if [ \"$NPC_VERIFY_OK\" = \"0\" ]; then\n"
+        'if [ "$1" = "verify-blob" ]; then\n'
+        '  if [ "$NPC_VERIFY_OK" = "0" ]; then\n'
         "    echo 'Error: verifying signature: signature does not match' >&2\n"
         "    exit 1\n"
         "  fi\n"
@@ -572,10 +639,10 @@ def _fake_cosign(tmp_path: Path, *, verify_ok: bool = True) -> Path:
     script.write_text(
         "#!/bin/sh\n"
         "# 只实现 sign-blob / verify-blob：前者把收到的 token 原样写进 bundle。\n"
-        + verify_body +
-        'out=""\n'
+        + verify_body
+        + 'out=""\n'
         'prev=""\n'
-        "for a in \"$@\"; do\n"
+        'for a in "$@"; do\n'
         '  [ "$prev" = "--bundle" ] && out="$a"\n'
         '  prev="$a"\n'
         "done\n"
@@ -583,7 +650,9 @@ def _fake_cosign(tmp_path: Path, *, verify_ok: bool = True) -> Path:
         '{"messageSignature":{"messageDigest":{"digest":"AAAA"}},'
         '"verificationMaterial":{"x509CertificateChain":{"certificates":[{"rawBytes":"QQ=="}]},'
         '"tlogEntries":[{"integratedTime":"1700000000"}]},'
-        '"npcToken":"'"${SIGSTORE_ID_TOKEN:-}"'"}\n'
+        '"npcToken":"'
+        "${SIGSTORE_ID_TOKEN:-}"
+        '"}\n'
         "JSON\n"
         "echo 'token-argv-check:' \"$@\" >&2\n"
         "exit 0\n"
@@ -624,6 +693,8 @@ def test_keyless_without_issuer_fails_with_3(workspace):
     env.pop("SIGSTORE_ID_TOKEN", None)
     env.pop("ACTIONS_ID_TOKEN_REQUEST_URL", None)
     env.pop("ACTIONS_ID_TOKEN_REQUEST_TOKEN", None)
+
+
 def test_examples_never_hand_a_boolean_false_to_sign():
     """`sign: ${{ ... || 'false' }}` 是坑：表达式 false 会渲染成 "False"。
 
@@ -647,9 +718,15 @@ def test_examples_pin_identity_to_the_triggering_ref():
     for path in EXAMPLES:
         for line in path.read_text(encoding="utf-8").splitlines():
             if line.lstrip().startswith("identity:") and "github.com" in line:
-                assert "/.github/workflows/" in line, f"{path.name} 的 identity 没钉到具体文件"
-                assert "||" not in line and "*" not in line, f"{path.name} 的 identity 用了宽匹配"
-                assert "@${{" in line, f"{path.name} 的 identity 把 ref 写死了：{line.strip()}"
+                assert (
+                    "/.github/workflows/" in line
+                ), f"{path.name} 的 identity 没钉到具体文件"
+                assert (
+                    "||" not in line and "*" not in line
+                ), f"{path.name} 的 identity 用了宽匹配"
+                assert (
+                    "@${{" in line
+                ), f"{path.name} 的 identity 把 ref 写死了：{line.strip()}"
 
 
 def test_examples_that_sign_enable_id_token():
@@ -662,6 +739,8 @@ def test_examples_that_sign_enable_id_token():
         if "action-verify.sh" in text or "INPUT_BUNDLE" in text:
             continue
         assert "id-token: write" in text, f"{path.name} 默认签名却没开 id-token: write"
+
+
 def test_keyless_bad_issuer_response_fails_with_3(workspace, tmp_path):
     """端点返回 401（权限没开）同样是 3：换不到 token 是工具侧的事。"""
     server, url = _fake_oidc_server(tmp_path, ok=False)
@@ -696,6 +775,7 @@ def test_caller_supplied_token_is_respected(workspace, tmp_path):
 # 这三件事都不会让 YAML 报错，只会在真跑的时候红。
 # ---------------------------------------------------------------------------
 
+
 def _evidence_steps(path: Path) -> list[dict]:
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     steps = []
@@ -719,9 +799,9 @@ def test_examples_never_pass_a_boolean_to_sign(path):
             continue
         # 只有「整串就是一个表达式」才会把布尔值原样渲染出来；
         # `cond && 'true' || ''` 已经在 YAML 层收敛成字符串了。
-        assert "&&" in sign or "${{" not in sign, (
-            f"{path.name} 直接把 outputs 当 sign 传，会渲染出 'False'：{sign}"
-        )
+        assert (
+            "&&" in sign or "${{" not in sign
+        ), f"{path.name} 直接把 outputs 当 sign 传，会渲染出 'False'：{sign}"
 
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
@@ -733,9 +813,9 @@ def test_examples_do_not_hardcode_identity_ref(path):
         if "@" not in identity:
             continue
         tail = identity.split("@", 1)[1]
-        assert "refs/heads/" not in tail or "${{" in tail, (
-            f"{path.name} 把 identity 的 ref 写死了：{identity}"
-        )
+        assert (
+            "refs/heads/" not in tail or "${{" in tail
+        ), f"{path.name} 把 identity 的 ref 写死了：{identity}"
     # 注释里也不能把这种写法当范例教出去
     assert "yml@refs/heads/main" not in text or "${{" in text
 
@@ -745,7 +825,10 @@ def test_examples_that_default_to_signing_have_id_token():
     for path in EXAMPLES:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         for job in data["jobs"].values():
-            perms = {**(data.get("permissions") or {}), **(job.get("permissions") or {})}
+            perms = {
+                **(data.get("permissions") or {}),
+                **(job.get("permissions") or {}),
+            }
             for step in job.get("steps", []):
                 if "XMZZUZHI/Github/ci-evidence-pack" not in str(step.get("uses", "")):
                     continue
@@ -757,12 +840,12 @@ def test_examples_that_default_to_signing_have_id_token():
                 if not sign:
                     if "sign" in with_:
                         continue
-                    assert perms.get("id-token") == "write", (
-                        f"{path.name} 不写 sign 就是默认签名，必须有 id-token: write"
-                    )
-                assert perms.get("id-token") == "write", (
-                    f"{path.name} 会走 keyless 签名，却没有 id-token: write"
-                )
+                    assert (
+                        perms.get("id-token") == "write"
+                    ), f"{path.name} 不写 sign 就是默认签名，必须有 id-token: write"
+                assert (
+                    perms.get("id-token") == "write"
+                ), f"{path.name} 会走 keyless 签名，却没有 id-token: write"
 
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
@@ -772,8 +855,13 @@ def test_examples_do_not_manage_private_keys(path):
     留一段「配了私钥就切 key 模式」的模板，等于把删掉的 fallback 又教回去。
     """
     text = path.read_text(encoding="utf-8")
-    for banned in ("COSIGN_KEY_B64", "COSIGN_PUBLIC_KEY_B64", "COSIGN_PASSWORD",
-                   "cosign-key", "cosign-public-key"):
+    for banned in (
+        "COSIGN_KEY_B64",
+        "COSIGN_PUBLIC_KEY_B64",
+        "COSIGN_PASSWORD",
+        "cosign-key",
+        "cosign-public-key",
+    ):
         assert banned not in text, f"{path.name} 仍在示范私钥方案：{banned}"
 
 
@@ -782,6 +870,7 @@ def test_examples_do_not_manage_private_keys(path):
 # 前者两个脚本判据分叉时症状出现在离原因最远的地方（装没装 → 内核报 3）；
 # 后者在签名默认开后，自检必过 0，那条结论的信息量接近于零。
 # ---------------------------------------------------------------------------
+
 
 def test_cosign_installer_runs_for_every_value_that_means_sign():
     """判据必须与 action-pack.sh 逐字一致：只有小写 'false' 才不装。
@@ -800,7 +889,7 @@ def test_cosign_installer_runs_for_every_value_that_means_sign():
 
 
 def test_sign_off_literal_is_shared_by_action_and_kernel():
-    """"哪种写法算关"只许有一个答案：内核、shell、action.yml 说的是同一句话。"""
+    """ "哪种写法算关"只许有一个答案：内核、shell、action.yml 说的是同一句话。"""
     from evidence_pack.signing import SIGN_OFF_LITERAL, is_sign_off
 
     assert SIGN_OFF_LITERAL == "false"
@@ -880,7 +969,7 @@ def test_signed_verify_is_3_when_cosign_went_missing(workspace, tmp_path):
         INPUT_IDENTITY="https://github.com/acme/app/.github/workflows/ci.yml@refs/heads/main",
         INPUT_ISSUER="https://token.actions.githubusercontent.com",
         INPUT_EXPECT_SHA256=out["bundle-sha256"],
-        PATH="/usr/bin:/bin",   # 这里没有 cosign
+        PATH="/usr/bin:/bin",  # 这里没有 cosign
     )
     proc = _call("action-verify.sh", verify_env, cwd=workspace)
     assert proc.returncode == 3, proc.stdout + proc.stderr

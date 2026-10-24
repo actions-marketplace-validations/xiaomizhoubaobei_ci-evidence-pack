@@ -24,11 +24,15 @@ from .errors import (
     EvidenceError,
     UsageError,
 )
-from .packer import PackOptions, pack as run_pack
+from .packer import PackOptions
+from .packer import pack as run_pack
 from .signing import DEFAULT_FULCIO_URL, DEFAULT_REKOR_URL, resolve_oidc_token
-from .verifier import VerifyOptions, verify as run_verify
+from .verifier import VerifyOptions
+from .verifier import verify as run_verify
 
-app = typer.Typer(add_completion=False, help="Deterministic, verifiable CI evidence bundles.")
+app = typer.Typer(
+    add_completion=False, help="Deterministic, verifiable CI evidence bundles."
+)
 
 
 def _emit(payload: dict, *, quiet_line: str | None, quiet: bool, as_json: bool) -> None:
@@ -43,13 +47,20 @@ def _emit(payload: dict, *, quiet_line: str | None, quiet: bool, as_json: bool) 
 def _fail(exc: EvidenceError, *, as_json: bool) -> None:
     """失败也要给一份和成功同构的 JSON：调用方不该为了读结论写两套解析。"""
     if as_json:
-        typer.echo(json.dumps({
-            "ok": False,
-            "exit_code": exc.exit_code,
-            "error": str(exc),
-            "kind": exc.kind,
-            "error_kind": exc.kind,
-        }, indent=2, sort_keys=True, ensure_ascii=False))
+        typer.echo(
+            json.dumps(
+                {
+                    "ok": False,
+                    "exit_code": exc.exit_code,
+                    "error": str(exc),
+                    "kind": exc.kind,
+                    "error_kind": exc.kind,
+                },
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+        )
     else:
         typer.echo(f"error: {exc}", err=True)
     raise typer.Exit(code=exc.exit_code)
@@ -83,26 +94,37 @@ def _reject_contradictions(
 def pack(
     repo: Path = typer.Option(Path("."), "--repo", help="仓库根目录"),
     out: Path = typer.Option(Path("dist"), "--out", help="输出目录（会自动排除自身）"),
-    include: list[str] = typer.Option(None, "--include", help="要收进包的文件/目录，相对仓库根；可多次"),
+    include: list[str] = typer.Option(
+        None, "--include", help="要收进包的文件/目录，相对仓库根；可多次"
+    ),
     sbom: str = typer.Option("auto", "--sbom", help="auto | none | python | node"),
     collect_git: bool = typer.Option(True, "--collect-git/--no-collect-git"),
     exclude: list[str] = typer.Option(None, "--exclude", help="额外排除的路径名"),
     sign: bool = typer.Option(
-        True, "--sign/--no-sign",
+        True,
+        "--sign/--no-sign",
         help="是否签名，默认为真：用 OIDC token 换 Fulcio 短期证书签（需 id-token: write）。"
-             "--no-sign 只应在「另有一条包外锚点」时使用",
+        "--no-sign 只应在「另有一条包外锚点」时使用",
     ),
     oidc_token_env: str = typer.Option(
-        None, "--oidc-token-env",
+        None,
+        "--oidc-token-env",
         help="从该环境变量读 OIDC token，换 Fulcio 短期证书（推荐用法）",
     ),
     oidc_token: str = typer.Option(
-        None, "--oidc-token",
+        None,
+        "--oidc-token",
         help="直接给 OIDC token（会进命令行历史与 ps，仅建议本地调试）",
     ),
-    fulcio_url: str = typer.Option(None, "--fulcio-url", help=f"Fulcio 地址，默认 {DEFAULT_FULCIO_URL}"),
-    rekor_url: str = typer.Option(None, "--rekor-url", help=f"Rekor 地址，默认 {DEFAULT_REKOR_URL}"),
-    identity: str = typer.Option(None, "--identity", help="期望签发身份，写进 metadata/binding.json 供验签方核对"),
+    fulcio_url: str = typer.Option(
+        None, "--fulcio-url", help=f"Fulcio 地址，默认 {DEFAULT_FULCIO_URL}"
+    ),
+    rekor_url: str = typer.Option(
+        None, "--rekor-url", help=f"Rekor 地址，默认 {DEFAULT_REKOR_URL}"
+    ),
+    identity: str = typer.Option(
+        None, "--identity", help="期望签发身份，写进 metadata/binding.json 供验签方核对"
+    ),
     issuer: str = typer.Option(None, "--issuer", help="期望 OIDC issuer，同上"),
     bundle_name: str = typer.Option(None, "--bundle-name", help="自定义包名"),
     quiet: bool = typer.Option(False, "--quiet", "-q"),
@@ -112,38 +134,45 @@ def pack(
     try:
         token = resolve_oidc_token(oidc_token, oidc_token_env)
         _reject_contradictions(sign=sign, token=token, identity=identity, issuer=issuer)
-        result = run_pack(PackOptions(
-            repo_root=repo,
-            out_dir=out,
-            includes=list(include or []),
-            sbom=sbom,
-            collect_git=collect_git,
-            identity=identity,
-            issuer=issuer,
-            oidc_token=token,
-            fulcio_url=fulcio_url,
-            rekor_url=rekor_url,
-            bundle_name=bundle_name,
-            excludes=list(exclude or []),
-            sign=sign,
-        ))
-        _emit({
-            "ok": True,
-            "exit_code": EXIT_OK,
-            "bundle_path": result.bundle_path,
-            "bundle_name": Path(result.bundle_path).name,
-            "bundle_sha256": result.bundle_sha256,
-            "file_count": result.file_count,
-            "source_date_epoch": result.source_date_epoch,
-            "sbom": result.sbom,
-            "signed": result.signature.signed,
-            "signature_mode": result.signature.mode,
-            "signature_bundle": result.signature.bundle_path,
-            "certificate_identity": result.signature.certificate_identity,
-            "certificate_issuer": result.signature.certificate_issuer,
-            "cert_not_before": result.signature.cert_not_before,
-            "cert_not_after": result.signature.cert_not_after,
-        }, quiet_line=result.bundle_path, quiet=quiet, as_json=as_json)
+        result = run_pack(
+            PackOptions(
+                repo_root=repo,
+                out_dir=out,
+                includes=list(include or []),
+                sbom=sbom,
+                collect_git=collect_git,
+                identity=identity,
+                issuer=issuer,
+                oidc_token=token,
+                fulcio_url=fulcio_url,
+                rekor_url=rekor_url,
+                bundle_name=bundle_name,
+                excludes=list(exclude or []),
+                sign=sign,
+            )
+        )
+        _emit(
+            {
+                "ok": True,
+                "exit_code": EXIT_OK,
+                "bundle_path": result.bundle_path,
+                "bundle_name": Path(result.bundle_path).name,
+                "bundle_sha256": result.bundle_sha256,
+                "file_count": result.file_count,
+                "source_date_epoch": result.source_date_epoch,
+                "sbom": result.sbom,
+                "signed": result.signature.signed,
+                "signature_mode": result.signature.mode,
+                "signature_bundle": result.signature.bundle_path,
+                "certificate_identity": result.signature.certificate_identity,
+                "certificate_issuer": result.signature.certificate_issuer,
+                "cert_not_before": result.signature.cert_not_before,
+                "cert_not_after": result.signature.cert_not_after,
+            },
+            quiet_line=result.bundle_path,
+            quiet=quiet,
+            as_json=as_json,
+        )
     except EvidenceError as exc:
         _fail(exc, as_json=as_json)
 
@@ -151,14 +180,27 @@ def pack(
 @app.command()
 def verify(
     bundle: Path = typer.Argument(..., help="证据包 .tar.gz"),
-    signature_bundle: Path = typer.Option(None, "--signature-bundle", help=".sigstore.json"),
-    identity: str = typer.Option(None, "--identity", help="期望签发身份（短期证书里的 sub）"),
+    signature_bundle: Path = typer.Option(
+        None, "--signature-bundle", help=".sigstore.json"
+    ),
+    identity: str = typer.Option(
+        None, "--identity", help="期望签发身份（短期证书里的 sub）"
+    ),
     issuer: str = typer.Option(None, "--issuer", help="期望 OIDC issuer"),
-    ignore_tlog: bool = typer.Option(False, "--insecure-ignore-tlog", help="跳过透明日志校验（结果会标记 tlog_checked=false）"),
-    expect_sha256: str = typer.Option(None, "--expect-sha256", help="外部锚点：期望的 bundle sha256"),
-    expect_repo: str = typer.Option(None, "--expect-repo", help="外部锚点：期望的 owner/repo"),
+    ignore_tlog: bool = typer.Option(
+        False,
+        "--insecure-ignore-tlog",
+        help="跳过透明日志校验（结果会标记 tlog_checked=false）",
+    ),
+    expect_sha256: str = typer.Option(
+        None, "--expect-sha256", help="外部锚点：期望的 bundle sha256"
+    ),
+    expect_repo: str = typer.Option(
+        None, "--expect-repo", help="外部锚点：期望的 owner/repo"
+    ),
     exit_code: bool = typer.Option(
-        False, "--exit-code",
+        False,
+        "--exit-code",
         help="只出结论：校验失败也正常结束进程，由调用方看 JSON 里的 exit_code",
     ),
     quiet: bool = typer.Option(False, "--quiet", "-q"),
@@ -167,38 +209,52 @@ def verify(
     """校验证据包。退出码：0 通过 / 1 用法 / 2 证据无效 / 3 工具异常。"""
     if exit_code:
         _verify_reporting(
-            bundle, signature_bundle, identity, issuer, ignore_tlog,
-            expect_sha256, expect_repo, quiet, as_json,
+            bundle,
+            signature_bundle,
+            identity,
+            issuer,
+            ignore_tlog,
+            expect_sha256,
+            expect_repo,
+            quiet,
+            as_json,
         )
         return
     try:
-        result = run_verify(VerifyOptions(
-            bundle_path=bundle,
-            signature_bundle=signature_bundle,
-            identity=identity,
-            issuer=issuer,
-            ignore_tlog=ignore_tlog,
-            expect_sha256=expect_sha256,
-            expect_repo=expect_repo,
-        ))
-        _emit({
-            "ok": True,
-            "exit_code": EXIT_OK,
-            "bundle_path": result.bundle_path,
-            "bundle_sha256": result.bundle_sha256,
-            "manifest_verified": result.manifest_verified,
-            "signature_verified": result.signature.verified,
-            "anchored": result.anchored,
-            "tlog_checked": result.signature.tlog_checked,
-            "signature_mode": result.signature.mode,
-            "certificate_identity": result.signature.certificate_identity,
-            "cert_not_before": result.signature.cert_not_before,
-            "cert_not_after": result.signature.cert_not_after,
-            "file_count": result.file_count,
-            "repo": result.repo,
-            "source_date_epoch": result.source_date_epoch,
-            "anchor_warnings": result.anchor_warnings,
-        }, quiet_line="OK", quiet=quiet, as_json=as_json)
+        result = run_verify(
+            VerifyOptions(
+                bundle_path=bundle,
+                signature_bundle=signature_bundle,
+                identity=identity,
+                issuer=issuer,
+                ignore_tlog=ignore_tlog,
+                expect_sha256=expect_sha256,
+                expect_repo=expect_repo,
+            )
+        )
+        _emit(
+            {
+                "ok": True,
+                "exit_code": EXIT_OK,
+                "bundle_path": result.bundle_path,
+                "bundle_sha256": result.bundle_sha256,
+                "manifest_verified": result.manifest_verified,
+                "signature_verified": result.signature.verified,
+                "anchored": result.anchored,
+                "tlog_checked": result.signature.tlog_checked,
+                "signature_mode": result.signature.mode,
+                "certificate_identity": result.signature.certificate_identity,
+                "cert_not_before": result.signature.cert_not_before,
+                "cert_not_after": result.signature.cert_not_after,
+                "file_count": result.file_count,
+                "repo": result.repo,
+                "source_date_epoch": result.source_date_epoch,
+                "anchor_warnings": result.anchor_warnings,
+            },
+            quiet_line="OK",
+            quiet=quiet,
+            as_json=as_json,
+        )
     except EvidenceError as exc:
         _fail(exc, as_json=as_json)
 
@@ -219,16 +275,18 @@ def _verify_reporting(
     存在的理由只有一个：Action 里要先拿到整体判定再做决策（上传证据、发评论），
     而不是让一个非零退出码在 set -e 下把后续步骤全掐掉。
     """
-    result = run_verify(VerifyOptions(
-        bundle_path=bundle,
-        signature_bundle=signature_bundle,
-        identity=identity,
-        issuer=issuer,
-        ignore_tlog=ignore_tlog,
-        expect_sha256=expect_sha256,
-        expect_repo=expect_repo,
-        exit_code_only=True,
-    ))
+    result = run_verify(
+        VerifyOptions(
+            bundle_path=bundle,
+            signature_bundle=signature_bundle,
+            identity=identity,
+            issuer=issuer,
+            ignore_tlog=ignore_tlog,
+            expect_sha256=expect_sha256,
+            expect_repo=expect_repo,
+            exit_code_only=True,
+        )
+    )
     payload = {
         "ok": result.ok,
         "exit_code": result.exit_code,
@@ -247,7 +305,9 @@ def _verify_reporting(
         "anchor_warnings": result.anchor_warnings,
     }
     if quiet and not as_json:
-        typer.echo("OK" if result.ok else f"INVALID({result.exit_code}): {result.error}")
+        typer.echo(
+            "OK" if result.ok else f"INVALID({result.exit_code}): {result.error}"
+        )
         return
     typer.echo(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False))
 

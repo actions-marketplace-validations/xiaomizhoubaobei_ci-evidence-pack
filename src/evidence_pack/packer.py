@@ -32,7 +32,8 @@ from .fsutil import (
     write_stable_json,
 )
 from .sbom import generate as generate_sbom
-from .signing import DEFAULT_BUNDLE_SUFFIX, SignatureResult, sign as sign_bundle
+from .signing import DEFAULT_BUNDLE_SUFFIX, SignatureResult
+from .signing import sign as sign_bundle
 
 FORMAT_VERSION = 2
 
@@ -101,7 +102,7 @@ class PackResult:
     source_date_epoch: int
     sbom: str
     signature: SignatureResult = field(default_factory=SignatureResult)
-    source_sha256: str = ""      # 签名实际覆盖的字节（与 bundle_sha256 不同：签名在包外）
+    source_sha256: str = ""  # 签名实际覆盖的字节（与 bundle_sha256 不同：签名在包外）
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -128,7 +129,9 @@ def collect_git_meta(repo_root: Path) -> dict | None:
 
 
 def collect_run_meta() -> dict:
-    meta = {key: os.environ[env] for key, env in RUN_ENV_KEYS.items() if os.environ.get(env)}
+    meta = {
+        key: os.environ[env] for key, env in RUN_ENV_KEYS.items() if os.environ.get(env)
+    }
     return meta
 
 
@@ -139,7 +142,9 @@ def write_manifest(stage_dir: Path) -> int:
     target = manifest_dir / "sha256sum.txt"
 
     lines = []
-    for path in sorted(stage_dir.rglob("*"), key=lambda p: p.relative_to(stage_dir).as_posix()):
+    for path in sorted(
+        stage_dir.rglob("*"), key=lambda p: p.relative_to(stage_dir).as_posix()
+    ):
         if not path.is_file() or path == target:
             continue
         lines.append(f"{sha256_file(path)}  {path.relative_to(stage_dir).as_posix()}")
@@ -162,7 +167,9 @@ def _default_bundle_name(repo_root: Path, git_meta: dict | None) -> str:
     return f"{slug}_{sha}.tar.gz"
 
 
-def _write_binding_meta(stage_dir: Path, *, identity: str | None, issuer: str | None) -> None:
+def _write_binding_meta(
+    stage_dir: Path, *, identity: str | None, issuer: str | None
+) -> None:
     """把「这份证据该由谁签发」写进包内，供验签方对照。
 
     注意语义：这是**声明**，不是证据。它可以被伪造，所以 verifier 只把它
@@ -170,10 +177,13 @@ def _write_binding_meta(stage_dir: Path, *, identity: str | None, issuer: str | 
     """
     if not identity and not issuer:
         return
-    write_stable_json(stage_dir / "metadata" / "binding.json", {
-        "identity": identity or "",
-        "issuer": issuer or "",
-    })
+    write_stable_json(
+        stage_dir / "metadata" / "binding.json",
+        {
+            "identity": identity or "",
+            "issuer": issuer or "",
+        },
+    )
 
 
 def pack(opts: PackOptions) -> PackResult:
@@ -196,13 +206,16 @@ def pack(opts: PackOptions) -> PackResult:
         collected = collector.collect(opts.includes, artifacts)
 
         meta_dir = stage / "metadata"
-        write_stable_json(meta_dir / "metadata.json", {
-            "format_version": FORMAT_VERSION,
-            "tool": "evidence-pack",
-            "tool_version": __version__,
-            "created_at_epoch": mtime,
-            "source_date_epoch": mtime,
-        })
+        write_stable_json(
+            meta_dir / "metadata.json",
+            {
+                "format_version": FORMAT_VERSION,
+                "tool": "evidence-pack",
+                "tool_version": __version__,
+                "created_at_epoch": mtime,
+                "source_date_epoch": mtime,
+            },
+        )
         write_stable_json(meta_dir / "run.json", collect_run_meta())
         if git_meta:
             write_stable_json(meta_dir / "git.json", git_meta)
@@ -217,10 +230,13 @@ def pack(opts: PackOptions) -> PackResult:
         if sbom_kind != "none":
             write_stable_json(meta_dir / "deps.json", {"sbom": sbom_kind})
 
-        write_stable_json(stage / "manifest" / "inputs.json", {
-            "files": collected.rel_paths,
-            "skipped": collected.skipped,
-        })
+        write_stable_json(
+            stage / "manifest" / "inputs.json",
+            {
+                "files": collected.rel_paths,
+                "skipped": collected.skipped,
+            },
+        )
 
         file_count = write_manifest(stage)
 

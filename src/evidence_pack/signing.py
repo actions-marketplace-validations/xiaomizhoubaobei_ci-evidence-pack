@@ -48,6 +48,8 @@ DEFAULT_BUNDLE_SUFFIX = ".sigstore.json"
 
 @dataclass
 class SignatureResult:
+    """签名产物：是否签成、走的哪种模式、有没有核过 tlog。"""
+
     signed: bool = False
     verified: bool = False
     mode: str | None = None  # 只有 "keyless"（OIDC 短期证书）

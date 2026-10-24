@@ -264,3 +264,22 @@ python -m pytest -q
 ```
 
 签名相关测试需要 `cosign`，没有则自动跳过。
+
+## 提交前检查（pre-commit）
+
+```bash
+pip install pre-commit
+pre-commit install          # 装进 .git/hooks，之后每次 commit 自动跑
+pre-commit run --all-files  # 想一次跑全量时用这个
+```
+
+管的是代码长相，和 `install_gpg_keys.sh` 管的「提交有没有签名」是两件事，
+两者都在本地跑，不依赖平台。hook 覆盖：EOF/空白/大文件/私钥泄露/YAML·TOML 语法、
+`black`、`flake8`、`isort`、`mypy`、`pydocstyle`。
+
+两处刻意的口径，改之前先看：
+
+- `isort` 钉在 `9.0.2`，不是上游最新的 `10.0.0b1` —— 后者要求 Python ≥3.11，
+  而本项目最低支持 3.10，装上直接报错。
+- `pydocstyle` 关掉 `D415`（`.pydocstyle` 里写了理由）：它只认半角 `.` 收尾，
+  而本仓库文档一律中文、句末是全角「。」。不关的话工具和仓库规范互相打架。

@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import tempfile
@@ -23,7 +22,6 @@ from pathlib import Path
 
 from . import __version__
 from .collect import Collector
-from .errors import ToolFailure
 from .fsutil import (
     build_tar_gz,
     resolve_source_date_epoch,
@@ -96,6 +94,8 @@ class PackOptions:
 
 @dataclass
 class PackResult:
+    """一次打包的产出：bundle 路径与哈希、文件数、SBOM 形态、签名结果。"""
+
     bundle_path: str
     bundle_sha256: str
     file_count: int
@@ -116,6 +116,7 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def collect_git_meta(repo_root: Path) -> dict | None:
+    """采 HEAD sha / 分支 / remote / dirty。不是 git 仓库就返回 None，不报错。"""
     sha = _git(repo_root, "rev-parse", "HEAD")
     if not sha:
         return None
@@ -129,6 +130,7 @@ def collect_git_meta(repo_root: Path) -> dict | None:
 
 
 def collect_run_meta() -> dict:
+    """采 CI 上下文（GitHub / CNB / GitLab）。采到什么记什么，一个都没有就空着。"""
     meta = {
         key: os.environ[env] for key, env in RUN_ENV_KEYS.items() if os.environ.get(env)
     }
@@ -187,6 +189,11 @@ def _write_binding_meta(
 
 
 def pack(opts: PackOptions) -> PackResult:
+    """组包：artifacts / metadata / sbom / manifest，打成确定性 tar.gz。
+
+    同一输入、同一 SOURCE_DATE_EPOCH 跑两次，产物哈希必须一致；
+    任何「按当前时间」「按文件系统顺序」的取值都会破坏这条，改动前先想清楚。
+    """
     repo_root = opts.repo_root.resolve()
     out_dir = opts.out_dir.resolve()
     if not repo_root.is_dir():

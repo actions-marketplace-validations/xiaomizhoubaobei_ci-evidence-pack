@@ -133,4 +133,3 @@ jobs:
             echo '```'
           } >> body.md
           gh release edit "${GITHUB_REF_NAME}" --notes-file body.md
-

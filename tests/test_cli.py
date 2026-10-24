@@ -11,8 +11,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 from evidence_pack.errors import (
     EXIT_EVIDENCE_INVALID,
     EXIT_OK,

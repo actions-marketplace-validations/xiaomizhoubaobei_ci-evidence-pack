@@ -24,6 +24,7 @@ CHUNK = 1 << 20
 
 
 def sha256_file(path: Path) -> str:
+    """算文件的 sha256，分块读 —— 大文件不整个读进内存。"""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(CHUNK), b""):
@@ -32,6 +33,7 @@ def sha256_file(path: Path) -> str:
 
 
 def sha256_bytes(data: bytes) -> str:
+    """算一段内存字节的 sha256。"""
     return hashlib.sha256(data).hexdigest()
 
 
@@ -43,6 +45,7 @@ def stable_json_bytes(data: Any) -> bytes:
 
 
 def write_stable_json(path: Path, data: Any) -> None:
+    """按 stable_json_bytes 的口径落盘，父目录不存在就建。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(stable_json_bytes(data))
 

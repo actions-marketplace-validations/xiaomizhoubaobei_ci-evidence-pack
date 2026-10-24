@@ -127,7 +127,11 @@ manifest/sha256sum.txt      除自身外每个文件的 sha256
 ```bash
 pip install -e ".[dev]"
 python -m pytest -q          # 签名相关用例在无 cosign 时自动跳过
+pre-commit run --all-files   # 提交前门禁，配置见 .pre-commit-config.yaml
 ```
+
+`pre-commit` 只管代码长相，签名仍由 `install_gpg_keys.sh` 负责，两者互不替代。
+它拦下的问题一律在本地修掉，**不要用 `--no-verify` 绕过**——那等于把门禁当成摆设。
 
 ### 8.5 已知取舍
 

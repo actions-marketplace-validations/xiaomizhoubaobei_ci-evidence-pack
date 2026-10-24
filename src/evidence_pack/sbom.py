@@ -28,6 +28,7 @@ SUPPORTED = ("auto", "none", "python", "node")
 
 
 def detect_kind(repo_root: Path) -> str | None:
+    """按仓库里的清单文件判项目类型，认不出返回 None（调用方据此判 3）。"""
     if any(
         (repo_root / f).exists()
         for f in ("pyproject.toml", "setup.py", "requirements.txt", "poetry.lock")

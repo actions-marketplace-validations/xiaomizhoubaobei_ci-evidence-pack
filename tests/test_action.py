@@ -5,6 +5,7 @@
 都只在这一层暴露。
 """
 
+import http.server
 import json
 import os
 import shutil
@@ -459,7 +460,6 @@ def test_example_outputs_are_real_action_outputs(path):
     text = path.read_text(encoding="utf-8")
     import re
 
-    used = set(re.findall(r"steps\.[A-Za-z0-9_-]+\.outputs\.([A-Za-z0-9_-]+)", text))
     # 只看指向 evidence-pack 那个 step 的引用（其它 step 的 output 不归这里管）
     ep_ids = set()
     data = yaml.safe_load(text)
@@ -498,15 +498,15 @@ def test_oidc_token_is_exchanged_before_signing(workspace, tmp_path):
     这里起一个假的 OIDC 端点，确认换出来的 token 真的经 SIGSTORE_ID_TOKEN
     传到了内核（用假 cosign 记录环境变量）。
     """
-    import http.server
     import threading
 
     fake_token = "h." + "p" * 120 + ".s"  # 三段式、长度过 MIN_TOKEN_LEN
-    seen: list[str] = []
+    seen: list[str] = []  # 端点被真实敲过的记录，末尾非空即证明链路通
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler 约定
             assert self.path.endswith("&audience=sigstore"), self.path
+            seen.append(self.path)
             body = json.dumps({"value": fake_token}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -556,6 +556,8 @@ def test_oidc_token_is_exchanged_before_signing(workspace, tmp_path):
         assert (tmp_path / "token.txt").read_text(encoding="utf-8") == fake_token
         # token 绝不进 argv：命令行里出现它等于把它写进作业日志。
         assert fake_token not in proc.stdout
+        # 且这个 token 是本进程从假端点换来的，不是环境里现成的字符串
+        assert seen, "假 OIDC 端点没被请求过，说明换 token 这一步没走"
     finally:
         server.shutdown()
 
@@ -564,9 +566,13 @@ def test_oidc_request_failure_is_3_not_2(workspace):
     """换 token 失败属于「流水线坏了」（3），不能糊成「证据无效」（2）。"""
     env = _action_env(
         workspace,
+        INPUT_SIGN="true",
         ACTIONS_ID_TOKEN_REQUEST_URL="http://127.0.0.1:1/oidc?x=1",  # 必然连不上
         ACTIONS_ID_TOKEN_REQUEST_TOKEN="request-token",
     )
+    proc = _call("action-pack.sh", env, cwd=workspace)
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert "evidence invalid" not in proc.stdout.lower()
 
 
 # keyless 换 token：`ACTIONS_ID_TOKEN_REQUEST_TOKEN` 只是换 token 的**凭据**，
@@ -578,9 +584,8 @@ def test_oidc_request_failure_is_3_not_2(workspace):
 
 def _fake_oidc_server(
     tmp_path: Path, *, ok: bool = True
-) -> tuple[subprocess.Popen, str]:
+) -> tuple[http.server.HTTPServer, str]:
     """起一个本地假 OIDC 端点，只认 audience=sigstore。"""
-    import http.server
     import threading
 
     port_holder: dict[str, int] = {}

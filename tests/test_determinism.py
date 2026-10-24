@@ -1,7 +1,7 @@
 import tarfile
 from pathlib import Path
 
-from evidence_pack.fsutil import build_tar_gz, normalize_tarinfo, stable_json_bytes
+from evidence_pack.fsutil import build_tar_gz, stable_json_bytes
 from evidence_pack.packer import PackOptions, pack
 
 

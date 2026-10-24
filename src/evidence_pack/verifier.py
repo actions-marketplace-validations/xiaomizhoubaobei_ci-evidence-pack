@@ -48,6 +48,8 @@ class VerifyOptions:
 
 @dataclass
 class VerifyResult:
+    """校验结论。ok / exit_code 按 errors.py 的三档语义给出，不许混。"""
+
     bundle_path: str
     bundle_sha256: str
     ok: bool = True
@@ -108,6 +110,11 @@ def _read_manifest(root: Path) -> dict[str, str]:
 
 
 def check_manifest(root: Path) -> int:
+    """逐条比对 sha256sum.txt，返回问题条数。
+
+    这只能证明包内自洽：清单本身也在包里，改包的人顺手就能改它。
+    真正的信任根必须在包外，这里不做也不假装做那件事。
+    """
     expected = _read_manifest(root)
     manifest_rel = "manifest/sha256sum.txt"
 

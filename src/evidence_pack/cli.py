@@ -10,20 +10,12 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import typer
 
 from . import __version__
-from .errors import (
-    EXIT_EVIDENCE_INVALID,
-    EXIT_OK,
-    EXIT_TOOL_FAILURE,
-    EXIT_USAGE,
-    EvidenceError,
-    UsageError,
-)
+from .errors import EXIT_OK, EvidenceError, UsageError
 from .packer import PackOptions
 from .packer import pack as run_pack
 from .signing import DEFAULT_FULCIO_URL, DEFAULT_REKOR_URL, resolve_oidc_token
@@ -319,8 +311,9 @@ def version() -> None:
 
 
 def main() -> None:
+    """console_scripts 入口：只负责把控制权交给 Typer。"""
     app()
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

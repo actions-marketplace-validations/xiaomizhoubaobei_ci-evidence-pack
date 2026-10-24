@@ -33,14 +33,23 @@ HARD_EXCLUDES: tuple[str, ...] = (".git",)
 
 @dataclass(frozen=True)
 class CollectResult:
+    """一次收集的结果：收进来的相对路径，以及被跳过的路径。"""
+
     rel_paths: list[str]
     skipped: list[str]
 
 
 class Collector:
+    """按 --include/--exclude 在仓库内挑文件，保留仓库相对路径。"""
+
     def __init__(
         self, repo_root: Path, out_dir: Path, excludes: list[str] | None = None
     ) -> None:
+        """确定根目录与排除规则。
+
+        排除项来自三处，顺序固定：内置默认、调用方 --exclude、.gitignore。
+        输出目录自身无条件排除 —— 否则上一版 bundle 会滚进这一版，越打越大。
+        """
         self.repo_root = repo_root.resolve()
         self.out_dir = out_dir.resolve()
         names = [*DEFAULT_EXCLUDES, *(excludes or []), *self._from_gitignore()]
@@ -112,6 +121,7 @@ class Collector:
         return any(resolved == r or r in resolved.parents for r in self.hard_excludes)
 
     def resolve_include(self, raw: str) -> Path:
+        """把 --include 解析成仓库内的真实路径，越界或不存在都判用法错。"""
         target = (self.repo_root / raw).resolve()
         if not target.is_relative_to(self.repo_root):
             raise UsageError(
@@ -123,6 +133,10 @@ class Collector:
         return target
 
     def collect(self, includes: list[str], stage_artifacts: Path) -> CollectResult:
+        """把 includes 指向的内容拷进 stage_artifacts，返回相对路径清单。
+
+        路径按字典序去重后写入，绝不依赖文件系统遍历顺序 —— 这是可复现的前提。
+        """
         if not includes:
             raise UsageError("至少要给一个 --include；空证据包没有意义。")
 

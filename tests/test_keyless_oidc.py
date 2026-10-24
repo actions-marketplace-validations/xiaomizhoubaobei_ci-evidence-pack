@@ -117,7 +117,6 @@ def test_sign_passes_token_via_env_not_argv(tmp_path, monkeypatch):
     blob = tmp_path / "b.bin"
     blob.write_bytes(b"x")
     bundle = tmp_path / "b.sigstore.json"
-    seen: dict = {}
 
     # 假 cosign：把环境变量与参数写进 side 文件，同时伪造一份带证书和 tlog 的 bundle。
     fake = _fake_cosign(
@@ -204,7 +203,6 @@ def _der_with_window(not_before: datetime, not_after: datetime) -> str:
     with tempfile.TemporaryDirectory() as tmp:
         key = Path(tmp) / "k.pem"
         cert = Path(tmp) / "c.pem"
-        fmt = "%Y%m%d%H%M%SZ"
         subprocess.run(
             [
                 "openssl",

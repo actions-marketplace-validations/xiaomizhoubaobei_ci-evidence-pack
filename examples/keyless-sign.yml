@@ -26,7 +26,7 @@ jobs:
         with:
           include: dist/
           sbom: none
-          sign: 'true'
+          # 签名是默认动作，不用显式写 sign: 'true'
           identity: https://github.com/${{ github.repository }}/.github/workflows/keyless-sign.yml@refs/heads/main
           issuer: https://token.actions.githubusercontent.com
           anchor-file: _evidence/anchor.txt

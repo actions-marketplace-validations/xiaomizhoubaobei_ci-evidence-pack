@@ -35,11 +35,12 @@ inputs:
 
   sign:
     description: |
-      是否用 cosign 签名。true 时：给了 cosign-key 走 key 模式，否则走 keyless
+      是否用 cosign 签名，默认 'true'。给了 cosign-key 走 key 模式，否则走 keyless
       （keyless 需要 job 里的 permissions.id-token: write，且只在 GitHub
-      托管的 runner 上有 OIDC token；自托管 / 本地跑请用 key 模式）
+      托管的 runner 上有 OIDC token；自托管 / 本地跑请用 key 模式）。
+      关掉它（'false'）只在你有另一条包外锚点时才是可辩护的选择
     required: false
-    default: 'false'
+    default: 'true'
 
   cosign-key:
     description: |
@@ -70,8 +71,8 @@ inputs:
 
   verify:
     description: |
-      打完包后立刻自检。true 时：有签名则验签名，无签名则要求同时提供 expect-sha256，
-      否则会如实判成「不构成证据」（退出码 2）
+      打完包后立刻自检。true 时：有签名则验签名，无签名（sign: 'false'）则要求同时
+      提供 expect-sha256，否则会如实判成「不构成证据」（退出码 2）
     required: false
     default: 'true'
 
@@ -181,7 +182,7 @@ runs:
         }
 
     - name: 安装 cosign
-      if: inputs.sign == 'true'
+      if: inputs.sign != 'false'
       uses: sigstore/cosign-installer@v3
 
     # 为什么要在 Action 里替用户装扫描器：`sbom: auto` 认出一个 Python 项目后，

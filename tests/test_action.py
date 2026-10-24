@@ -51,7 +51,9 @@ def _env(tmp_path: Path, **overrides) -> dict:
         "INPUT_INCLUDE": "dist/\n# 注释与空行要忽略\n\nconfigs/app.yml\n",
         "INPUT_SBOM": "auto",
         "INPUT_OUT_DIR": str(tmp_path / "out"),
-        "INPUT_SIGN": "false",
+        # 默认与 action.yml 一致（sign: 'true'）。想不签名必须显式传 "false"，
+        # 别把测试的默认值和真实默认值写成两件事。
+        "INPUT_SIGN": "true",
         "INPUT_ISSUER": "",
         "INPUT_IDENTITY": "",
         "INPUT_BUNDLE_NAME": "",
@@ -73,13 +75,19 @@ def _run(script: str, env: dict) -> subprocess.CompletedProcess:
     )
 
 
+def _unsigned(tmp_path: Path, **overrides) -> dict:
+    """不签名的环境：绝大多数用例只关心打包/验包链路，不该被签名拖下水。"""
+    overrides.setdefault("INPUT_SIGN", "false")
+    return _env(tmp_path, **overrides)
+
+
 def test_pack_writes_outputs_and_ignores_comment_lines(tmp_path):
     _repo(tmp_path)
-    proc = _run("action-pack.sh", _env(tmp_path))
+    proc = _run("action-pack.sh", _unsigned(tmp_path))
     assert proc.returncode == 0, proc.stderr
     out = _outputs(tmp_path)
     bundle = Path(out["bundle-path"])
-    assert bundle.is_file() and out["signed"] == "false"
+    assert bundle.is_file() and out["signed"] == "false"  # sign: 'false' 时如实不签
     assert len(out["bundle-sha256"]) == 64
     # 结果文件落在调用方的 cwd 里，方便 Action 之外的脚本复用同一份输出。
     payload = json.loads((tmp_path / "pack-result.json").read_text(encoding="utf-8"))
@@ -88,26 +96,26 @@ def test_pack_writes_outputs_and_ignores_comment_lines(tmp_path):
 
 def test_pack_is_reproducible_for_the_same_commit(tmp_path):
     _repo(tmp_path)
-    first = _run("action-pack.sh", _env(tmp_path, INPUT_OUT_DIR=str(tmp_path / "o1")))
+    first = _run("action-pack.sh", _unsigned(tmp_path, INPUT_OUT_DIR=str(tmp_path / "o1")))
     assert first.returncode == 0, first.stderr
     sha1 = _outputs(tmp_path)["bundle-sha256"]
-    second = _run("action-pack.sh", _env(tmp_path, INPUT_OUT_DIR=str(tmp_path / "o2")))
+    second = _run("action-pack.sh", _unsigned(tmp_path, INPUT_OUT_DIR=str(tmp_path / "o2")))
     assert second.returncode == 0, second.stderr
     assert _outputs(tmp_path)["bundle-sha256"] == sha1
 
 
 def test_pack_without_include_is_usage_failure(tmp_path):
     _repo(tmp_path)
-    proc = _run("action-pack.sh", _env(tmp_path, INPUT_INCLUDE="  \n\n"))
+    proc = _run("action-pack.sh", _unsigned(tmp_path, INPUT_INCLUDE="  \n\n"))
     assert proc.returncode == 1
     assert "include 为空" in proc.stdout + proc.stderr
 
 
 def test_verify_passes_with_matching_anchor(tmp_path):
     _repo(tmp_path)
-    assert _run("action-pack.sh", _env(tmp_path)).returncode == 0
+    assert _run("action-pack.sh", _unsigned(tmp_path)).returncode == 0
     out = _outputs(tmp_path)
-    proc = _run("action-verify.sh", _env(
+    proc = _run("action-verify.sh", _unsigned(
         tmp_path, INPUT_BUNDLE=out["bundle-path"], INPUT_EXPECT_SHA256=out["bundle-sha256"]
     ))
     assert proc.returncode == 0, proc.stdout
@@ -117,9 +125,9 @@ def test_verify_passes_with_matching_anchor(tmp_path):
 
 def test_verify_reports_2_and_never_0_when_anchor_mismatches(tmp_path):
     _repo(tmp_path)
-    assert _run("action-pack.sh", _env(tmp_path)).returncode == 0
+    assert _run("action-pack.sh", _unsigned(tmp_path)).returncode == 0
     out = _outputs(tmp_path)
-    proc = _run("action-verify.sh", _env(
+    proc = _run("action-verify.sh", _unsigned(
         tmp_path, INPUT_BUNDLE=out["bundle-path"], INPUT_EXPECT_SHA256="a" * 64
     ))
     assert proc.returncode == 2
@@ -130,19 +138,19 @@ def test_verify_reports_2_and_never_0_when_anchor_mismatches(tmp_path):
 def test_verify_without_anchor_is_not_evidence(tmp_path):
     """包内自洽不算证据 —— 这条底线在 Action 层也不许被放宽。"""
     _repo(tmp_path)
-    assert _run("action-pack.sh", _env(tmp_path)).returncode == 0
+    assert _run("action-pack.sh", _unsigned(tmp_path)).returncode == 0
     out = _outputs(tmp_path)
-    proc = _run("action-verify.sh", _env(tmp_path, INPUT_BUNDLE=out["bundle-path"]))
+    proc = _run("action-verify.sh", _unsigned(tmp_path, INPUT_BUNDLE=out["bundle-path"]))
     assert proc.returncode == 2
     assert _outputs(tmp_path)["anchored"] == "false"
 
 
 def test_anchor_file_is_appended(tmp_path):
     _repo(tmp_path)
-    assert _run("action-pack.sh", _env(tmp_path)).returncode == 0
+    assert _run("action-pack.sh", _unsigned(tmp_path)).returncode == 0
     out = _outputs(tmp_path)
     anchor = tmp_path / "anchor.txt"
-    env = _env(tmp_path, INPUT_BUNDLE=out["bundle-path"], INPUT_ANCHOR_FILE=str(anchor))
+    env = _unsigned(tmp_path, INPUT_BUNDLE=out["bundle-path"], INPUT_ANCHOR_FILE=str(anchor))
     assert _run("action-anchor.sh", env).returncode == 0
     assert _run("action-anchor.sh", env).returncode == 0
     lines = [line for line in anchor.read_text(encoding="utf-8").splitlines() if line]
@@ -230,7 +238,8 @@ def _action_env(workspace: Path, **inputs: str) -> dict:
         "INPUT_SBOM": "none",
         "INPUT_OUT_DIR": "_evidence",
         "INPUT_BUNDLE_NAME": "",
-        "INPUT_SIGN": "false",
+        # 与 action.yml 的默认保持一致：默认签名。不签的用例显式传 "false"。
+        "INPUT_SIGN": "true",
         "INPUT_COSIGN_KEY": "",
         "INPUT_ARTIFACT_NAME": "",
         "INPUT_IDENTITY": "",
@@ -263,7 +272,7 @@ def test_repo_root_is_really_used_as_repo(workspace):
     """
     subdir = workspace / "sub"
     subdir.mkdir()
-    proc = _call("action-pack.sh", _action_env(workspace), cwd=subdir)
+    proc = _call("action-pack.sh", _action_env(workspace, INPUT_SIGN="false"), cwd=subdir)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     out = _gh_outputs(workspace.parent / "gh-output.txt")
     assert Path(out["bundle-path"]).parent == workspace / "_evidence"
@@ -271,24 +280,33 @@ def test_repo_root_is_really_used_as_repo(workspace):
 
 def test_default_excludes_still_pack_the_requested_dirs(workspace):
     """默认排除名单里有 dist，而 dist 恰恰是最常被 include 的目录。"""
-    proc = _call("action-pack.sh", _action_env(workspace), cwd=workspace)
+    proc = _call("action-pack.sh", _action_env(workspace, INPUT_SIGN="false"), cwd=workspace)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     result = json.loads((workspace / "pack-result.json").read_text(encoding="utf-8"))
     assert result["file_count"] >= 4  # git.json / metadata 等 + 三个 artifacts
 
 
 def test_unsignable_keyless_fails_fast_with_3(workspace):
-    """sign=true 但没有私钥、也没有 OIDC token：该立刻报清楚，而不是等 cosign 炸。"""
-    proc = _call("action-pack.sh", _action_env(workspace, INPUT_SIGN="true"), cwd=workspace)
+    """默认签名、但没有私钥也没有 OIDC token：该立刻报清楚，而不是等 cosign 炸。"""
+    proc = _call("action-pack.sh", _action_env(workspace), cwd=workspace)
     assert proc.returncode == 3
     assert "id-token" in proc.stdout + proc.stderr
 
 
+def test_sign_defaults_to_true_in_the_manifest():
+    """签名是默认动作这件事必须落在 action.yml 上，而不只是脚本里的兜底。"""
+    assert _manifest()["inputs"]["sign"]["default"] == "true"
+
+
 def test_pack_then_verify_roundtrip(workspace):
-    assert _call("action-pack.sh", _action_env(workspace), cwd=workspace).returncode == 0
+    # 不签名的那条路径：信任根只能来自包外锚点，所以 verify 必须带 expect-sha256。
+    assert _call(
+        "action-pack.sh", _action_env(workspace, INPUT_SIGN="false"), cwd=workspace
+    ).returncode == 0
     out = _gh_outputs(workspace.parent / "gh-output.txt")
     env = _action_env(
         workspace,
+        INPUT_SIGN="false",
         INPUT_BUNDLE=out["bundle-path"],
         INPUT_SIGNATURE_BUNDLE="",
         INPUT_COSIGN_PUBLIC_KEY="",
@@ -388,7 +406,9 @@ def test_signature_without_public_key_is_usage_error_not_green(workspace, tmp_pa
 
 def test_anchor_then_upload_paths_are_real(workspace):
     """上传那一步列的三个路径必须都是真实文件，否则 artifact 会静默缺件。"""
-    assert _call("action-pack.sh", _action_env(workspace), cwd=workspace).returncode == 0
+    assert _call(
+        "action-pack.sh", _action_env(workspace, INPUT_SIGN="false"), cwd=workspace
+    ).returncode == 0
     out = _gh_outputs(workspace.parent / "gh-output.txt")
     anchor = workspace / "_evidence" / "anchor.txt"
     anchored = _call(

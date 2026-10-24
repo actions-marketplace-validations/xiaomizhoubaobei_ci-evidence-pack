@@ -64,8 +64,9 @@ def pack(
     exclude: list[str] = typer.Option(None, "--exclude", help="额外排除的路径名"),
     key: str = typer.Option(None, "--key", help="cosign 私钥路径（key 模式）"),
     sign: bool = typer.Option(
-        False, "--sign",
-        help="要求签名：给了 --key 走 key 模式，否则走 keyless（需 OIDC token / id-token: write）",
+        True, "--sign/--no-sign",
+        help="是否签名，默认为真：给了 --key 走 key 模式，否则走 keyless（需 OIDC token / id-token: write）。"
+             "--no-sign 只应在「另有一条包外锚点」时使用",
     ),
     oidc_token_env: str = typer.Option(
         None, "--oidc-token-env",
@@ -83,7 +84,7 @@ def pack(
     quiet: bool = typer.Option(False, "--quiet", "-q"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
-    """生成证据包（可选 --bundle 签名）。"""
+    """生成证据包并签名（默认用 cosign 签）。"""
     try:
         result = run_pack(PackOptions(
             repo_root=repo,

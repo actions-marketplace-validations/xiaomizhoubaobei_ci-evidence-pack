@@ -29,7 +29,7 @@ steps:
         dist/
         configs/
       sbom: auto
-      sign: 'true'                # 不给 cosign-key 就走 keyless
+      # 不用写 sign：默认就签名。不给 cosign-key 就走 keyless
       identity: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/heads/main
       issuer: https://token.actions.githubusercontent.com
       anchor-file: _evidence/anchor.txt
@@ -39,8 +39,8 @@ steps:
 它做的事，按顺序：
 
 1. 检查 `python3 >= 3.10`（不往你的环境里装包，只借 `PYTHONPATH`）
-2. `sign: true` 时装 cosign
-3. `pack` → 包与 `.sigstore.json`
+2. 装 cosign（除非显式 `sign: 'false'`）
+3. `pack` → 包与 `.sigstore.json`（默认签名）
 4. `anchor-file` 有值时把 sha256 追加登记（包外台账）
 5. `verify: true`（默认）自检：有签名验签名，没签名则以 `expect-sha256` 为锚点
 6. `upload-artifact: true`（默认）把包、签名、台账一起上传
@@ -54,7 +54,7 @@ steps:
 | `sbom` | `auto` | `auto` / `none` / `python` / `node` |
 | `out-dir` | `_evidence` | 输出目录，会自动排除在收集范围外 |
 | `bundle-name` | `evidence-<短sha>.tar.gz` | 包名（保存时会去掉开头的点） |
-| `sign` | `false` | 是否签名 |
+| `sign` | `true` | 是否用 cosign 签名。`'false'` 只在你有另一条包外锚点时才是可辩护的选择 |
 | `cosign-key` | 空 | cosign **私钥**，仅用于签名；口令用 `COSIGN_PASSWORD` 环境变量 |
 | `cosign-public-key` | 空 | cosign **公钥**，仅用于验签。签名用私钥、验签用公钥，不能互换 |
 | `identity` / `issuer` | issuer 默认 GitHub OIDC | 期望签发身份，写进包内 `binding.json` |
@@ -197,7 +197,11 @@ base64 -w0 cosign.key   # 填进 COSIGN_KEY_B64
 base64 -w0 cosign.pub   # 填进 COSIGN_PUBLIC_KEY_B64
 ```
 
-没配密钥也照样跑：`sign` 会留空，退化成「无签名 + sha256 锚点」模式。
+没配密钥也照样跑：示例里 `sign: ${{ steps.cosign.outputs.configured }}` 会算成
+`false`，退化成「无签名 + sha256 锚点」模式，并打出 notice 说明原因。
+
+注意默认值是 `true`：一个 job 若既没配 `cosign-key`、也没有 `id-token: write`，
+会直接判退出码 1（缺 OIDC token）而不是悄悄不签。要么补权限，要么显式关签名。
 
 ## 关于 `expect-repo` 的边界
 

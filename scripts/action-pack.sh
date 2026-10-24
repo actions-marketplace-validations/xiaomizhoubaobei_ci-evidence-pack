@@ -56,16 +56,18 @@ for exc in "${EXCLUDES[@]}"; do
   ARGS+=(--exclude "$exc")
 done
 
-if [ "${INPUT_SIGN:-false}" = "true" ]; then
-  if [ -n "${INPUT_COSIGN_KEY:-}" ]; then
-    ARGS+=(--key "$INPUT_COSIGN_KEY")
-  else
-    # keyless 靠 runner 派发的 OIDC token，命令行给不了也没法伪造。
-    if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
-      echo "::error::sign=true 且未提供 cosign-key：keyless 需要 id-token: write，且只在 GitHub 托管 runner 上有 OIDC token。自托管 / 本地请改用 key 模式"
-      exit 3
-    fi
-    ARGS+=(--sign)
+# 签名是默认动作：内核默认就签，这里只负责把「不签」这件事显式传下去。
+# 只有 sign: false 才会走到 --no-sign —— 那时信任根必须来自包外锚点，
+# 否则下游 verify 会如实判 2（包内自洽不算证据）。
+if [ "${INPUT_SIGN:-true}" = "false" ]; then
+  ARGS+=(--no-sign)
+elif [ -n "${INPUT_COSIGN_KEY:-}" ]; then
+  ARGS+=(--key "$INPUT_COSIGN_KEY")
+else
+  # keyless 靠 runner 派发的 OIDC token，命令行给不了也没法伪造。
+  if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+    echo "::error::未提供 cosign-key，走 keyless 就需要 id-token: write，且只在 GitHub 托管 runner 上有 OIDC token。自托管 / 本地请改用 cosign-key，或显式 sign: 'false'（此时必须有包外锚点）"
+    exit 3
   fi
 fi
 

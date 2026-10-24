@@ -66,9 +66,12 @@ RUN_ENV_KEYS = {
 class PackOptions:
     """打包参数。
 
+    默认为签名：没有 `--key` 就走 keyless（OIDC 换来的 Fulcio 短期证书），
+    `--no-sign` 才退化成「无签名 + 包外锚点」。
+
     `identity` / `issuer` 在打包阶段只是**期望值**：keyless 签名时它们会被写进
     metadata/binding.json 供验签方核对，同时透传给 cosign 做签发身份约束。
-    签名本身仍然只由 `--key` 与「是否要求签名」决定，两者互不隐式启用。
+    它们本身不是签名开关——把期望身份当开关，正是原实现的坑。
     """
 
     repo_root: Path
@@ -85,7 +88,8 @@ class PackOptions:
     rekor_url: str | None = None
     bundle_name: str | None = None
     excludes: list[str] = field(default_factory=list)
-    sign: bool = False
+    # 默认签名。关掉它等于回到「包内自洽」，那就必须有包外锚点才算证据。
+    sign: bool = True
 
 
 @dataclass

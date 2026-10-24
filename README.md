@@ -3,6 +3,10 @@
 把一次 CI 构建钉成一份可独立验证的证据包：确定性打包、严格 manifest、
 cosign bundle 签名、退出码 0/2/3 分层。
 
+**签名是默认动作。** 有私钥就 key 模式，没有就走 keyless（OIDC 换 Fulcio
+短期证书）。想不签，得显式说 `--no-sign` / `sign: 'false'` —— 并且自己
+准备好包外的 sha256 锚点，否则这份包不构成证据。
+
 > 灵感来自 [OrygnsCode/ci-evidence-pack](https://github.com/OrygnsCode/ci-evidence-pack)（MIT）。
 > 只沿用它的思路（确定性打包、严格解包、双输出模式），签名层与 CLI 全部重写。
 
@@ -41,7 +45,8 @@ steps:
         dist/
         configs/
       sbom: auto
-      sign: 'true'
+      # 签名是默认动作：给了 cosign-key 走 key，否则走 keyless。
+      # 只有明确写 sign: 'false' 才会不签名 —— 那时信任根必须来自包外锚点。
       identity: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/heads/main
       anchor-file: _evidence/anchor.txt     # 把 sha256 留在包外
 ```
@@ -59,7 +64,8 @@ steps:
 | `signature-verified` / `anchored` | 签名真的验过没有、包外锚点核对过没有 |
 
 Action 是 composite 的，不往调用方的解释器里 `pip install`，只把本仓库的
-`src` 塞进 `PYTHONPATH`；cosign 只在 `sign: true` 时才装。
+`src` 塞进 `PYTHONPATH`；cosign 默认就装上（因为默认要签名），
+只有写 `sign: 'false'` 时才跳过。
 
 完整示例见 [`examples/`](examples)：**发版即取证**（`release.yml`，照抄即可）、
 最小可用、keyless 签名、下游校验各一份。
@@ -67,7 +73,12 @@ Action 是 composite 的，不往调用方的解释器里 `pip install`，只把
 只想尽快用起来，直接把 [`examples/release.yml`](examples/release.yml) 复制到
 你仓库的 `.github/workflows/` 下，然后改两处：`include` 里的产物路径、
 以及（可选）`COSIGN_KEY_B64` / `COSIGN_PUBLIC_KEY_B64` / `COSIGN_PASSWORD`
-三个 secret。没配密钥也能跑，会退化成「无签名 + sha256 锚点」。
+三个 secret。没配密钥也不会红：示例会显式写 `sign: 'false'`，退化成
+「无签名 + sha256 锚点」，并在 job 里给出 notice 说明。
+
+> 签名默认开启这件事，意味着 job 需要 `permissions.id-token: write`。
+> 少了它，默认路径（keyless）拿不到 token，会当场判用法错（1）而不是静默不签 ——
+> 这是刻意的：一份「以为签了其实没签」的证据，比没有证据更危险。
 
 ### 关于 `expect-repo`
 
@@ -100,22 +111,16 @@ Python 项目缺 `cyclonedx-py` 时会退到 `requirements.txt` 的内置解析�
 ## 用法
 
 ```bash
-# 打包（确定性）
-evidence-pack pack --repo . --include dist --include configs --sbom auto
-
-# 用 cosign key 模式签名（只产 .sigstore.json）
+# 打包 + 签名（默认）：给了 --key 走 key，否则走 keyless
 COSIGN_PASSWORD=... evidence-pack pack --repo . --include dist --key cosign.key
 
-# keyless：用 OIDC token 换 Fulcio 短期证书签名（CI 里的主路径）
+# keyless：用 OIDC token 换 Fulcio 短期证书（CI 里的主路径）
 export SIGSTORE_ID_TOKEN=<平台注入的 OIDC token>
-evidence-pack pack --repo . --include dist --sign --oidc-token-env SIGSTORE_ID_TOKEN \
+evidence-pack pack --repo . --include dist --oidc-token-env SIGSTORE_ID_TOKEN \
   --identity "https://github.com/org/repo/.github/workflows/ci.yml@refs/heads/main"
 
-# key 模式（持钥签名）
-evidence-pack pack --repo . --include dist --sign --key cosign.key
-
-# 不签（此时必须有包外锚点才算证据）
-evidence-pack pack --repo . --include dist
+# 不签名（此时必须有包外锚点才算证据）。--no-sign 是唯一的关闭方式
+evidence-pack pack --repo . --include dist --no-sign
 
 # 验包：带外部锚点
 evidence-pack verify bundle.tar.gz --expect-sha256 <hex>

@@ -15,8 +15,10 @@ def _packed(tmp_path: Path, monkeypatch) -> Path:
     repo = tmp_path / "repo"
     (repo / "src").mkdir(parents=True)
     (repo / "src" / "a.txt").write_text("original")
+    # 这些用例验的是「无签名时只有包外锚点才算证据」，所以显式关掉签名。
     result = pack(PackOptions(
-        repo_root=repo, out_dir=tmp_path / "out", includes=["src"], sbom="none", collect_git=False
+        repo_root=repo, out_dir=tmp_path / "out", includes=["src"], sbom="none",
+        collect_git=False, sign=False,
     ))
     return Path(result.bundle_path)
 
@@ -127,7 +129,7 @@ def _packed_with_remote(tmp_path: Path, monkeypatch, remote: str) -> Path:
     ):
         subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
     result = pack(PackOptions(
-        repo_root=repo, out_dir=tmp_path / "out", includes=["src"], sbom="none"
+        repo_root=repo, out_dir=tmp_path / "out", includes=["src"], sbom="none", sign=False
     ))
     return Path(result.bundle_path)
 

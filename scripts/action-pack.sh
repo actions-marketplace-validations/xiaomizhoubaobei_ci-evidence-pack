@@ -11,16 +11,22 @@ REPO="${REPO_ROOT:-.}"
 
 # ---------------------------------------------------------------------------
 # 输入归一化：multiline 输入 → 参数数组。
-# 空行与纯注释行忽略，行尾空白裁掉（从 YAML 复制粘贴时最常见的那种脏）。
+# 空行与纯注释行忽略，行首行尾空白都裁掉：从 YAML 复制粘贴时缩进最容易带进来
+# （多行 `|` 块会被整块缩进），而 `--include "  dist/"` 在内核眼里就是个不存在的路径。
 # ---------------------------------------------------------------------------
 mapfile -t INCLUDES < <(
   printf '%s\n' "${INPUT_INCLUDE:-}" \
     | tr -d '\r' \
     | sed -e 's/[[:space:]]*$//' \
+    | sed -e 's/^[[:space:]]*//' \
     | grep -v -e '^$' -e '^#' || true
 )
 if [ "${#INCLUDES[@]}" -eq 0 ]; then
-  echo "::error::include 为空：证据包里没有内容就没有意义，请显式列出要收的路径"
+  # 这条分支最常见的原因是调用方**根本没写** include：它是必填输入，
+  # 漏写时 inputs.include 渲染成空串，Action 不会替他兜底选目录。
+  # 所以文案要点名「必填输入」和该填什么，而不是只说「为空」——
+  # 否则现场只会看到一句「证据包里没有内容」，看不出是自己少写了一行。
+  echo "::error::include 为空：它是必填输入，请在 uses: 的 with: 下显式列出要收进证据包的文件或目录（例如 include: | 换行 dist/ 换行 pyproject.toml）。漏写 include 已如实判为用法错误（退出码 1），证据未生成"
   exit 1
 fi
 
@@ -50,6 +56,7 @@ mapfile -t EXCLUDES < <(
   printf '%s\n' "${INPUT_EXCLUDE:-}" \
     | tr -d '\r' \
     | sed -e 's/[[:space:]]*$//' \
+    | sed -e 's/^[[:space:]]*//' \
     | grep -v -e '^$' -e '^#' || true
 )
 for exc in "${EXCLUDES[@]}"; do

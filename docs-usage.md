@@ -30,7 +30,9 @@ steps:
         configs/
       sbom: auto
       sign: 'true'                # 不给 cosign-key 就走 keyless
-      identity: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/heads/main
+      # identity 留空 = 按本次触发的 repository + workflow + ref 自动拼。
+      # 要显式写就把 ref 也交给表达式，别把 @refs/heads/main 刻进文件里。
+      identity: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@${{ github.ref }}
       issuer: https://token.actions.githubusercontent.com
       anchor-file: _evidence/anchor.txt
       expect-repo: ${{ github.repository }}
@@ -54,10 +56,10 @@ steps:
 | `sbom` | `auto` | `auto` / `none` / `python` / `node` |
 | `out-dir` | `_evidence` | 输出目录，会自动排除在收集范围外 |
 | `bundle-name` | `evidence-<短sha>.tar.gz` | 包名（保存时会去掉开头的点） |
-| `sign` | `false` | 是否签名 |
+| `sign` | 空（不签） | 只有小写 `'true'` 才算开。条件传值时用 `cond && 'true' \|\| ''`，别直接传 outputs（会渲染成 `'False'`） |
 | `cosign-key` | 空 | cosign **私钥**，仅用于签名；口令用 `COSIGN_PASSWORD` 环境变量 |
 | `cosign-public-key` | 空 | cosign **公钥**，仅用于验签。签名用私钥、验签用公钥，不能互换 |
-| `identity` / `issuer` | issuer 默认 GitHub OIDC | 期望签发身份，写进包内 `binding.json` |
+| `identity` / `issuer` | identity 按触发 ref 自动拼，issuer 默认 GitHub OIDC | 期望签发身份，写进包内 `binding.json` |
 | `verify` | `true` | 打完包立刻自检 |
 | `expect-sha256` | 空（用本次产物的 sha） | 包外锚点 |
 | `expect-repo` | 空 | 包外锚点 |
@@ -147,7 +149,24 @@ evidence-pack verify dist/x.tar.gz \
 identity 要和签名那次**完全一致**：workflow 文件路径 + ref。改了流水线文件名，
 历史 bundle 就验不过了 —— 这是特性，不是 bug。
 
+`@` 后面那截跟着触发 ref 走，别写死。GitHub 上写 `@${{ github.ref }}`
+（`refs/heads/main` / `refs/tags/v1.0.0`），CNB 上写 `@${{ CNB_BRANCH }}` 之类；
+在 Action 里干脆留空 —— 它会按本次触发的 repository + workflow + ref 自动拼。
+把 `@refs/heads/main` 抄进一个 tag 触发的流水线，只会在签完名之后判 2：
+「签名身份不是我以为的那个」，跟配置笔误不是一个事故等级。
+
 ## GitHub Actions 的 keyless 写法
+
+用 Action 的话不必自己换 token：`sign: 'true'` 之后，`scripts/action-oidc.sh`
+会拿 runner 注入的 `ACTIONS_ID_TOKEN_REQUEST_URL` + `ACTIONS_ID_TOKEN_REQUEST_TOKEN`
+去换一枚 `audience=sigstore` 的 token。
+
+**这里有个坑值得单独说**：`ACTIONS_ID_TOKEN_REQUEST_TOKEN` 是**换 token 的凭据**，
+不是 token 本体。把它当 token 用，Fulcio 只会回 401，而现场看起来跟
+「`id-token: write` 没开」一模一样 —— 最难查的那种。判据必须是「有没有签发方」，
+而不是「某个变量在不在」。
+
+手工调 CLI 时要自己换：
 
 ```yaml
 permissions:
@@ -157,14 +176,20 @@ permissions:
 steps:
   - run: pip install evidence-pack
   - run: |
+      # 注意：响应体里就是凭据，别 echo 出来
+      id_token=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+        "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sigstore" | python3 -c 'import json,sys;print(json.load(sys.stdin)["value"])')
+      echo "SIGSTORE_ID_TOKEN=$id_token" >> "$GITHUB_ENV"
+  - run: |
       evidence-pack pack --repo . --include dist \
         --oidc-token-env SIGSTORE_ID_TOKEN
-    env:
-      SIGSTORE_ID_TOKEN: ${{ steps.oidc.outputs.token }}   # 或直接让 cosign 自取
 ```
 
-GitHub 上 cosign 能自动从 Actions 拿 token，不必显式传；显式传的好处是
-`--oidc-token-env` 名字写死在命令里，签名身份来源可审计。
+token 只走环境变量（`--oidc-token-env`），绝不用 `--oidc-token` 拼进命令行：
+argv 会被 `ps`、作业日志和调试输出记住。谁拿到它，谁就能用你的身份签任何东西。
+
+换不到 token（端点 401 / 权限没开 / 变量缺失）一律是**退出码 3**：
+凭据没到位是「流水线坏了」，不是「证据无效」，两者的处置完全不同。
 
 ```yaml
 main:

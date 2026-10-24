@@ -35,11 +35,16 @@ inputs:
 
   sign:
     description: |
-      是否用 cosign 签名。true 时：给了 cosign-key 走 key 模式，否则走 keyless
+      是否用 cosign 签名，只有小写 'true' 才算开，留空 / 其它值一律不签。
+      设为 true 时：给了 cosign-key 走 key 模式，否则走 keyless
       （keyless 需要 job 里的 permissions.id-token: write，且只在 GitHub
-      托管的 runner 上有 OIDC token；自托管 / 本地跑请用 key 模式）
+      托管的 runner 上有 OIDC 签发方；自托管 / 本地跑请用 key 模式）。
+
+      空串在这里是「没给」的同义词，所以示例里用 `cond && 'true' || ''` 传值。
+      别写 `${{ steps.x.outputs.configured }}` —— 那会渲染成 'false'（小写）
+      或 'False'（JavaScript 布尔转字符串），后者会让判定失效。
     required: false
-    default: 'false'
+    default: ''
 
   cosign-key:
     description: |
@@ -59,7 +64,12 @@ inputs:
     description: |
       keyless 期望签发身份，例如
       https://github.com/<owner>/<repo>/.github/workflows/<file>.yml@refs/heads/main
-      会被写进包内 metadata/binding.json，并作为验签时的默认期望值
+      会被写进包内 metadata/binding.json，并作为验签时的默认期望值。
+
+      留空时自动拼：repository + workflow_ref + ref_name
+      （在 tag 上跑就是 .../<file>.yml@refs/tags/v1.0.0）。
+      写死 @refs/heads/main 的写法在 tag 上必然验不过，那不是配置笔误，
+      是「签名身份不是我以为的那个」，判定为 2。
     required: false
     default: ''
 
@@ -180,6 +190,9 @@ runs:
           exit 1
         }
 
+    # 只在真要签名时装。判据与 scripts/action-pack.sh 保持一致：
+    # 小写 'true' 才算开，空串 / 'false' / 'False' 一律不算 —— 一个渲染出来的
+    # 布尔值不该把一次打包变成「找不到 cosign」。
     - name: 安装 cosign
       if: inputs.sign == 'true'
       uses: sigstore/cosign-installer@v3
@@ -246,7 +259,9 @@ runs:
         INPUT_SIGN: ${{ inputs.sign }}
         INPUT_COSIGN_KEY: ${{ inputs.cosign-key }}
         INPUT_ARTIFACT_NAME: ${{ inputs.artifact-name }}
-        INPUT_IDENTITY: ${{ inputs.identity }}
+        # identity 留空时按 realm/workflow_ref 现拼：identity 里的 @refs/...
+        # 必须跟着本次触发的 ref 走，写死 main 的示例在 tag 上必然判 2。
+        INPUT_IDENTITY: ${{ inputs.identity || format('https://github.com/{0}/{1}@{2}', github.repository, github.workflow_ref, github.ref_name) }}
         INPUT_ISSUER: ${{ inputs.issuer }}
       run: bash "${{ github.action_path }}/scripts/action-pack.sh"
 
@@ -271,7 +286,8 @@ runs:
         # 未签名时这个值为空字符串，脚本据此跳过签名校验（而不是拿空路径去调 cosign）。
         INPUT_SIGNATURE_BUNDLE: ${{ steps.pack.outputs.signature-bundle }}
         INPUT_COSIGN_PUBLIC_KEY: ${{ inputs.cosign-public-key }}
-        INPUT_IDENTITY: ${{ inputs.identity }}
+        # 与打包步骤同源：验签要用的期望身份就是打包时写进 binding.json 的那个。
+        INPUT_IDENTITY: ${{ inputs.identity || format('https://github.com/{0}/{1}@{2}', github.repository, github.workflow_ref, github.ref_name) }}
         INPUT_ISSUER: ${{ inputs.issuer }}
         INPUT_EXPECT_SHA256: ${{ inputs.expect-sha256 || steps.pack.outputs.bundle-sha256 }}
         INPUT_EXPECT_REPO: ${{ inputs.expect-repo || github.repository }}

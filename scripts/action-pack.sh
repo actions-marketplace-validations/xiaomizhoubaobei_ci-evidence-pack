@@ -60,12 +60,22 @@ if [ "${INPUT_SIGN:-false}" = "true" ]; then
   if [ -n "${INPUT_COSIGN_KEY:-}" ]; then
     ARGS+=(--key "$INPUT_COSIGN_KEY")
   else
-    # keyless 靠 runner 派发的 OIDC token，命令行给不了也没法伪造。
-    if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
-      echo "::error::sign=true 且未提供 cosign-key：keyless 需要 id-token: write，且只在 GitHub 托管 runner 上有 OIDC token。自托管 / 本地请改用 key 模式"
+    # keyless 的身份来自 OIDC，命令行伪造不了，所以判据不是「有没有某个变量」，
+    # 而是「有没有签发方」：调用方已经给好 SIGSTORE_ID_TOKEN 就原样尊重，
+    # 否则现去端点换一枚。
+    #
+    # 换不到一律判 3 —— 凭据没到位是「流水线坏了」，不是「证据无效」，
+    # 这两件事的人工处置完全不同，不能混成一个红叉。
+    if ! OIDC_TOKEN="$(bash "$(dirname "${BASH_SOURCE[0]}")/action-oidc.sh")"; then
+      echo "::error::sign=true 且未提供 cosign-key：keyless 需要 id-token: write（GitHub 托管 runner）。自托管 / 本地请改用 key 模式"
       exit 3
     fi
-    ARGS+=(--sign)
+    # token 只走环境变量交给内核，绝不进 argv：argv 会被 ps、日志和调试输出记住。
+    if [ -z "${SIGSTORE_ID_TOKEN:-}" ]; then
+      export SIGSTORE_ID_TOKEN="$OIDC_TOKEN"
+      unset OIDC_TOKEN
+    fi
+    ARGS+=(--sign --oidc-token-env SIGSTORE_ID_TOKEN)
   fi
 fi
 

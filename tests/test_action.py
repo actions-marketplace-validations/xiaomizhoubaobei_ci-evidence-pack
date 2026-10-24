@@ -458,3 +458,226 @@ def test_example_outputs_are_real_action_outputs(path):
     }
     unknown = {o for _, o in used_ep} - declared
     assert not unknown, f"{path.name} 引用了不存在的 output：{sorted(unknown)}"
+
+
+# ---------------------------------------------------------------------------
+# keyless 换 token：`ACTIONS_ID_TOKEN_REQUEST_TOKEN` 只是换 token 的**凭据**，
+# 不是 token 本体。把它当 token 用，就是在 Fulcio 那里换回一个 401 ——
+# 现场看起来跟「id-token: write 没开」一模一样，最难查。
+# 所以这里起一个假 OIDC 端点 + 假 cosign，把链路钉死。
+# ---------------------------------------------------------------------------
+
+def _fake_oidc_server(tmp_path: Path, *, ok: bool = True) -> tuple[subprocess.Popen, str]:
+    """起一个本地假 OIDC 端点，只认 audience=sigstore。"""
+    import http.server
+    import threading
+
+    port_holder: dict[str, int] = {}
+    seen: dict[str, str] = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - http.server 的接口
+            seen["path"] = self.path
+            seen["auth"] = self.headers.get("Authorization", "")
+            if not ok:
+                self.send_response(401)
+                self.end_headers()
+                self.wfile.write(b'{"message":"denied"}')
+                return
+            body = json.dumps({"value": _OIDC_TOKEN}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port_holder["port"] = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    server._seen = seen  # type: ignore[attr-defined]
+    return server, f"http://127.0.0.1:{port_holder['port']}"
+
+
+_OIDC_TOKEN = "h." + "e" * 60 + "." + "s" * 60
+
+
+def _fake_cosign(tmp_path: Path) -> Path:
+    """假 cosign：sign-blob 时把 SIGSTORE_ID_TOKEN 抄进 bundle，便于断言。"""
+    fake = tmp_path / "fakebin"
+    fake.mkdir(exist_ok=True)
+    script = fake / "cosign"
+    script.write_text(
+        "#!/bin/sh\n"
+        "# 只实现 sign-blob：把收到的 token 原样写进 bundle 的 metadata 里。\n"
+        'out=""\n'
+        'prev=""\n'
+        "for a in \"$@\"; do\n"
+        '  [ "$prev" = "--bundle" ] && out="$a"\n'
+        '  prev="$a"\n'
+        "done\n"
+        'cat > "$out" <<JSON\n'
+        '{"messageSignature":{"messageDigest":{"digest":"AAAA"}},'
+        '"verificationMaterial":{"x509CertificateChain":{"certificates":[{"rawBytes":"QQ=="}]},'
+        '"tlogEntries":[{"integratedTime":"1700000000"}]},'
+        '"npcToken":"'"${SIGSTORE_ID_TOKEN:-}"'"}\n'
+        "JSON\n"
+        "echo 'token-argv-check:' \"$@\" >&2\n"
+        "exit 0\n"
+    )
+    script.chmod(0o755)
+    return fake
+
+
+def test_keyless_exchanges_oidc_token_and_never_puts_it_in_argv(workspace, tmp_path):
+    """给了签发方就要现换 token，且 token 只走环境变量。"""
+    server, url = _fake_oidc_server(tmp_path)
+    fake = _fake_cosign(tmp_path)
+    try:
+        env = _action_env(workspace, INPUT_SIGN="true")
+        env.pop("SIGSTORE_ID_TOKEN", None)
+        env["ACTIONS_ID_TOKEN_REQUEST_URL"] = url
+        env["ACTIONS_ID_TOKEN_REQUEST_TOKEN"] = "request-token-not-a-jwt"
+        env["PATH"] = f"{fake}{os.pathsep}{env['PATH']}"
+        proc = _call("action-pack.sh", env, cwd=workspace)
+    finally:
+        server.shutdown()
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = _gh_outputs(workspace.parent / "gh-output.txt")
+    bundle = json.loads(Path(out["signature-bundle"]).read_text(encoding="utf-8"))
+    # 关键：被打进 bundle 的是**换回来的** token，不是那串请求凭据。
+    assert bundle["npcToken"] == _OIDC_TOKEN
+    # 端点收到的必须是 sigstore audience，否则 Fulcio 不认。
+    assert "audience=sigstore" in server._seen["path"]  # type: ignore[attr-defined]
+    # token 不出现在进程参数里。
+    assert _OIDC_TOKEN not in proc.stdout and _OIDC_TOKEN not in proc.stderr
+
+
+def test_keyless_without_issuer_fails_with_3(workspace):
+    """没有签发方 = 凭据问题 = 3（流水线坏了），不是 2（证据无效）。"""
+    env = _action_env(workspace, INPUT_SIGN="true")
+    env.pop("SIGSTORE_ID_TOKEN", None)
+    env.pop("ACTIONS_ID_TOKEN_REQUEST_URL", None)
+    env.pop("ACTIONS_ID_TOKEN_REQUEST_TOKEN", None)
+    proc = _call("action-pack.sh", env, cwd=workspace)
+    assert proc.returncode == 3
+    assert "id-token" in proc.stdout + proc.stderr
+
+
+def test_keyless_bad_issuer_response_fails_with_3(workspace, tmp_path):
+    """端点返回 401（权限没开）同样是 3：换不到 token 是工具侧的事。"""
+    server, url = _fake_oidc_server(tmp_path, ok=False)
+    try:
+        env = _action_env(workspace, INPUT_SIGN="true")
+        env.pop("SIGSTORE_ID_TOKEN", None)
+        env["ACTIONS_ID_TOKEN_REQUEST_URL"] = url
+        env["ACTIONS_ID_TOKEN_REQUEST_TOKEN"] = "request-token-not-a-jwt"
+        proc = _call("action-pack.sh", env, cwd=workspace)
+    finally:
+        server.shutdown()
+    assert proc.returncode == 3
+
+
+def test_caller_supplied_token_is_respected(workspace, tmp_path):
+    """调用方已经换好 token 就原样用，不再去端点兜一圈。"""
+    fake = _fake_cosign(tmp_path)
+    env = _action_env(workspace, INPUT_SIGN="true")
+    env["SIGSTORE_ID_TOKEN"] = _OIDC_TOKEN
+    env.pop("ACTIONS_ID_TOKEN_REQUEST_URL", None)
+    env["PATH"] = f"{fake}{os.pathsep}{env['PATH']}"
+    proc = _call("action-pack.sh", env, cwd=workspace)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = _gh_outputs(workspace.parent / "gh-output.txt")
+    bundle = json.loads(Path(out["signature-bundle"]).read_text(encoding="utf-8"))
+    assert bundle["npcToken"] == _OIDC_TOKEN
+
+
+# ---------------------------------------------------------------------------
+# 示例工作流：用户是照抄的，所以它们的写法本身也是契约。
+# 布尔值渲染成 'False'、identity 写死 ref、sign 开着却没给 id-token ——
+# 这三件事都不会让 YAML 报错，只会在真跑的时候红。
+# ---------------------------------------------------------------------------
+
+def _evidence_steps(path: Path) -> list[dict]:
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    steps = []
+    for job in data["jobs"].values():
+        for step in job.get("steps", []):
+            if "XMZZUZHI/Github/ci-evidence-pack" in str(step.get("uses", "")):
+                steps.append(step)
+    return steps
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_examples_never_pass_a_boolean_to_sign(path):
+    """`sign` 只认小写 'true'。把某个 outputs 直接塞给它，会渲染成 'false'/'False'。
+
+    这类写法在 YAML 里完全合法，静默失效 —— 于是示例带着空密钥撞进 keyless，
+    最普通的场景反而最红。
+    """
+    for step in _evidence_steps(path):
+        sign = str((step.get("with") or {}).get("sign", ""))
+        if not sign:
+            continue
+        # 只有「整串就是一个表达式」才会把布尔值原样渲染出来；
+        # `cond && 'true' || ''` 已经在 YAML 层收敛成字符串了。
+        assert "&&" in sign or "${{" not in sign, (
+            f"{path.name} 直接把 outputs 当 sign 传，会渲染出 'False'：{sign}"
+        )
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_examples_do_not_hardcode_identity_ref(path):
+    """identity 的 `@refs/...` 必须跟着触发 ref 走，写死 main 在 tag 上判 2。"""
+    text = path.read_text(encoding="utf-8")
+    for step in _evidence_steps(path):
+        identity = str((step.get("with") or {}).get("identity", ""))
+        if "@" not in identity:
+            continue
+        tail = identity.split("@", 1)[1]
+        assert "refs/heads/" not in tail or "${{" in tail, (
+            f"{path.name} 把 identity 的 ref 写死了：{identity}"
+        )
+    # 注释里也不能把这种写法当范例教出去
+    assert "yml@refs/heads/main" not in text or "${{" in text
+
+
+def test_examples_that_default_to_signing_have_id_token():
+    """默认签名的示例（不给 sign 或给 'true'）必须在 job 里开 id-token: write。"""
+    for path in EXAMPLES:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job in data["jobs"].values():
+            perms = {**(data.get("permissions") or {}), **(job.get("permissions") or {})}
+            for step in job.get("steps", []):
+                if "XMZZUZHI/Github/ci-evidence-pack" not in str(step.get("uses", "")):
+                    continue
+                with_ = step.get("with") or {}
+                sign = str(with_.get("sign", ""))
+                # 给了具体的私钥路径 = key 模式，不走 OIDC；写成表达式则是条件切换。
+                if with_.get("cosign-key") and "${{" not in str(with_["cosign-key"]):
+                    continue
+                # 显式留空 = 不签名；给了 sign 就必须是 'true'（keyless 默认签名）
+                if not sign:
+                    if "sign" in with_:
+                        continue
+                    assert perms.get("id-token") == "write", (
+                        f"{path.name} 不写 sign 就是默认签名，必须有 id-token: write"
+                    )
+                assert perms.get("id-token") == "write", (
+                    f"{path.name} 会走 keyless 签名，却没有 id-token: write"
+                )
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_example_key_setup_requires_both_keys(path):
+    """只配私钥不配公钥：签得出、验不了，示例必须当场拦下。"""
+    text = path.read_text(encoding="utf-8")
+    if "COSIGN_KEY_B64" not in text:
+        return
+    assert "COSIGN_PUBLIC_KEY_B64" in text, f"{path.name} 只处理了私钥"
+    assert '::error::' in text and "COSIGN_PUBLIC_KEY_B64" in text, (
+        f"{path.name} 没有在「只有私钥」时当场拦下"
+    )

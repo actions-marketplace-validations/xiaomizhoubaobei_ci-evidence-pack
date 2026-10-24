@@ -14,9 +14,12 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# id-token: write 是 keyless 签名（默认路径）的硬前提：它签发 OIDC token，
+# 少了它 Action 会直接判退出码 3，而不是悄悄不签。job 级写 permissions 时
+# 注意这里会覆盖顶层 —— 本文件只写顶层一处，job 里不再重写。
 permissions:
   contents: write   # 挂 Release 需要
-  id-token: write   # keyless 签名需要；没有它签名会走 key 模式或无签名
+  id-token: write   # keyless 签名必需
 
 jobs:
   release:

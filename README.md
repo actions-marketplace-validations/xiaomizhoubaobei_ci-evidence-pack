@@ -32,6 +32,7 @@ bash install_gpg_keys.sh
 ## 当 Action 用
 
 ```yaml
+# keyless（默认路径）要 OIDC token；缺了 id-token: write 会判退出码 3
 permissions:
   contents: read
   id-token: write          # keyless 签名必需
@@ -76,9 +77,33 @@ Action 是 composite 的，不往调用方的解释器里 `pip install`，只把
 三个 secret。没配密钥也不会红：示例会显式写 `sign: 'false'`，退化成
 「无签名 + sha256 锚点」，并在 job 里给出 notice 说明。
 
-> 签名默认开启这件事，意味着 job 需要 `permissions.id-token: write`。
-> 少了它，默认路径（keyless）拿不到 token，会当场判用法错（1）而不是静默不签 ——
-> 这是刻意的：一份「以为签了其实没签」的证据，比没有证据更危险。
+### OIDC 权限：默认签名绕不开的一步
+
+签名默认开启，而默认路径是 keyless —— 它的信任根不是密钥，而是平台签发的
+OIDC token。所以 job 必须显式打开 OIDC 权限：
+
+```yaml
+permissions:
+  contents: read
+  id-token: write   # keyless 签名必需：没有它就拿不到 OIDC token
+```
+
+`id-token` 默认是 `none`，且 **job 级 `permissions` 一旦写了就是白名单**：
+顶层给了 `id-token: write` 不算，job 里重写 `permissions` 就会把它覆盖掉。
+
+三条路，任选其一：
+
+| 情况 | 怎么办 |
+|---|---|
+| GitHub 托管 runner | 加 `id-token: write`，走 keyless（推荐） |
+| 自托管 / 本地，没有 OIDC | 给 `cosign-key`，走 key 模式（不需要 OIDC） |
+| 两者都没有 | 显式 `sign: 'false'`，并自备包外 sha256 锚点 |
+
+前两条都走不通又不肯关签名，Action 会当场以退出码 3 报出「缺 OIDC token」，
+而不是静默不签 —— 一份「以为签了其实没签」的证据，比没有证据更危险。
+
+顺带一句：OIDC token 有时效（GitHub 上是 job 级、短期），且只在 job 运行期间有效。
+拿它签完的包，验证时不依赖 token，只依赖包内的证书链 + `--identity` / `--issuer`。
 
 ### 关于 `expect-repo`
 

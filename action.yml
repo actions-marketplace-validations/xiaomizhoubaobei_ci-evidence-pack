@@ -36,9 +36,11 @@ inputs:
   sign:
     description: |
       是否用 cosign 签名，默认 'true'。给了 cosign-key 走 key 模式，否则走 keyless
-      （keyless 需要 job 里的 permissions.id-token: write，且只在 GitHub
-      托管的 runner 上有 OIDC token；自托管 / 本地跑请用 key 模式）。
-      关掉它（'false'）只在你有另一条包外锚点时才是可辩护的选择
+      —— keyless 的信任根是 OIDC token，所以 job 必须声明 permissions.id-token: write
+      （job 级 permissions 会覆盖顶层声明，要写在 job 上）。该权限只在 GitHub
+      托管 runner 上有；自托管 / 本地没有 OIDC 签发方，请改用 cosign-key，
+      或显式 'false' 并以包外 sha256 锚点当信任根。
+      关掉签名（'false'）只在你有另一条包外锚点时才是可辩护的选择
     required: false
     default: 'true'
 

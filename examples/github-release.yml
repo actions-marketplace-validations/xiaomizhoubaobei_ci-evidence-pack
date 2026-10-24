@@ -22,7 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write   # 发 Release 需要
-      id-token: write   # keyless 签名需要；用 key 模式时它用不上，留着无害
+      # keyless 签名（默认路径）必需。job 级 permissions 会整体覆盖顶层声明，
+      # 所以顶层写了 id-token 也不算，得在这里再写一遍。
+      # 用 key 模式时它用不上，留着无害。
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:

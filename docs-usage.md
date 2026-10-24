@@ -54,7 +54,7 @@ steps:
 | `sbom` | `auto` | `auto` / `none` / `python` / `node` |
 | `out-dir` | `_evidence` | 输出目录，会自动排除在收集范围外 |
 | `bundle-name` | `evidence-<短sha>.tar.gz` | 包名（保存时会去掉开头的点） |
-| `sign` | `true` | 是否用 cosign 签名。`'false'` 只在你有另一条包外锚点时才是可辩护的选择 |
+| `sign` | `true` | 是否用 cosign 签名。默认值意味着 job 需要 `id-token: write`（见下节）。`'false'` 只在你有另一条包外锚点时才是可辩护的选择 |
 | `cosign-key` | 空 | cosign **私钥**，仅用于签名；口令用 `COSIGN_PASSWORD` 环境变量 |
 | `cosign-public-key` | 空 | cosign **公钥**，仅用于验签。签名用私钥、验签用公钥，不能互换 |
 | `identity` / `issuer` | issuer 默认 GitHub OIDC | 期望签发身份，写进包内 `binding.json` |
@@ -201,7 +201,41 @@ base64 -w0 cosign.pub   # 填进 COSIGN_PUBLIC_KEY_B64
 `false`，退化成「无签名 + sha256 锚点」模式，并打出 notice 说明原因。
 
 注意默认值是 `true`：一个 job 若既没配 `cosign-key`、也没有 `id-token: write`，
-会直接判退出码 1（缺 OIDC token）而不是悄悄不签。要么补权限，要么显式关签名。
+会直接判退出码 3（缺 OIDC token / cosign 拿不到 token）而不是悄悄不签。
+要么补权限，要么显式关签名。
+
+## 签名的前提：OIDC 权限
+
+`sign` 默认是 `true`，而默认路径是 keyless。keyless 的信任根是平台签发的
+**OIDC token**，不是任何一把长期密钥。所以只要走默认路径，job 就必须打开
+OIDC 权限：
+
+```yaml
+permissions:
+  id-token: write   # 没有它，keyless 拿不到 token，Action 判 3
+```
+
+几个容易踩的点：
+
+- `id-token` 的默认值是 `none`，必须显式写 `write`。
+- **job 级 `permissions` 是白名单**：顶层声明了 `id-token: write`，只要 job 里
+  另写了 `permissions`，顶层那份就被整体覆盖 —— 记得在 job 里也写一遍。
+- token 有时效（GitHub 的同类 token 只有几分钟），只在签名那一刻用。
+  验证时不依赖 token，只依赖包内证书链加 `--identity` / `--issuer`。
+- 自托管 runner 通常没有 OIDC 签发方：改用 `cosign-key` 走 key 模式，
+  或显式 `sign: 'false'` 并以包外 sha256 锚点当信任根。
+
+三种情形的对应关系：
+
+| 情形 | 选择 |
+|---|---|
+| GitHub 托管 runner | `id-token: write` + keyless（默认） |
+| 自托管 / 本地 | `cosign-key` + key 模式，不需要 OIDC |
+| 两者皆无 | `sign: 'false'`，自备包外锚点，否则 `verify` 判 2 |
+
+缺 OIDC token 而又没关签名时，Action 在 `pack` 之前就以退出码 3 停下，
+报错里会点名 `id-token: write`。这是刻意的分流：**缺少工具/凭据属于流水线问题（3），
+证据被动手脚才是 2**，两者的处置方式完全不同。
 
 ## 关于 `expect-repo` 的边界
 

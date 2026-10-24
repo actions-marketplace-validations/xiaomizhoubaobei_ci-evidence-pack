@@ -1,0 +1,43 @@
+# CNB 侧流水线：只干一件事——把本仓库强制镜像到 GitHub。
+#
+# 单测、打包、Release 都不在这里跑：本仓库的验证入口是 `python -m pytest -q`
+# 与 GitHub Action（action.yml / examples/），CNB 不重复构建一遍。
+#
+# 凭据经密钥仓库注入（见 imports 的 Github.yml）：GIT_USERNAME / GIT_ACCESS_TOKEN
+# / GIT_EMAIL 三个变量由该文件提供，禁止在本文件写死任何 token。
+main:
+  push:
+    - services:
+        - docker
+      imports:
+        - https://cnb.cool/XMZZUZHI/key/-/blob/main/Github.yml
+      stages:
+        # 先自检变量再同步：缺变量时 git-sync 的报错埋在插件日志里，
+        # 不如在第一步就直接说清楚缺了哪个。
+        - name: 校验同步凭据
+          script: |
+            set -u
+            missing=""
+            for v in GIT_USERNAME GIT_ACCESS_TOKEN GIT_EMAIL; do
+              eval "val=\${$v:-}"
+              [ -n "$val" ] || missing="$missing $v"
+            done
+            if [ -n "$missing" ]; then
+              echo "❌ 缺少同步凭据:$missing"
+              echo "   请在密钥仓库 XMZZUZHI/key 的 Github.yml 中补齐后重跑"
+              exit 1
+            fi
+            echo "✅ 同步凭据齐备（token 长度 ${#GIT_ACCESS_TOKEN}，不回显内容）"
+        - name: 同步到GitHub
+          image: tencentcom/git-sync
+          settings:
+            target_url: https://github.com/xiaomizhoubaobei/ci-evidence-pack.git
+            auth_type: https
+            username: ${GIT_USERNAME}
+            password: ${GIT_ACCESS_TOKEN}
+            branch: main
+            # 强制覆盖镜像：目标仓库以 CNB 侧为准，分叉时用 --force 覆盖
+            # （对应 git-sync 的 PLUGIN_FORCE）
+            force: true
+            git_user: ${GIT_USERNAME}
+            git_email: ${GIT_EMAIL}

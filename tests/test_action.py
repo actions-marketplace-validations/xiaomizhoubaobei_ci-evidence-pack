@@ -277,7 +277,9 @@ def test_cosign_install_failure_is_caught_by_a_later_step():
     assert check.get("shell") == "bash"
     # installer 失败会让依赖它的步骤按 success() 被跳过 —— 那正是最需要自检的一刻，
     # 所以判据必须显式带上 always()。
-    assert "always()" in str(check.get("if", "")), "自检步骤要带 always()，否则安装失败时它也被跳过"
+    # 先取变量再断言：行宽留给提示语，别让 black 把断言拆成两行。
+    condition = str(check.get("if", ""))
+    assert "always()" in condition, "自检步骤必须带 always()，否则安装失败时会被跳过"
     # 读得到安装结论：没有 id 就写不出这个引用。
     assert any(
         f"steps.{install['id']}." in v for v in (check.get("env") or {}).values()
@@ -300,7 +302,11 @@ def test_examples_pin_action_to_a_full_sha():
     for path in EXAMPLES + [ROOT / "README.md", ROOT / "docs-usage.md"]:
         text = path.read_text(encoding="utf-8")
         for use in re.findall(r"ci-evidence-pack@(\S+)", text):
-            assert re.fullmatch(r"[0-9a-f]{40}", use), f"{path.name} 用了浮动引用：@{use}"
+            # 先取变量再断言：中文提示语一行放不下，折行会难看。
+            ref = use
+            assert re.fullmatch(
+                r"[0-9a-f]{40}", ref
+            ), f"{path.name} 用了浮动引用：@{ref}"
 
 
 def test_every_output_has_description():

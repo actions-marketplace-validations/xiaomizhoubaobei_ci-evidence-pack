@@ -1031,3 +1031,13 @@ def test_signed_verify_is_3_when_cosign_went_missing(workspace, tmp_path):
     proc = _call("action-verify.sh", verify_env, cwd=workspace)
     assert proc.returncode == 3, proc.stdout + proc.stderr
     assert "cosign" in proc.stdout + proc.stderr
+
+
+def test_oidc_probe_step_can_be_referenced_by_callers():
+    """探针结论要能被调用方读到：没有 id，日志里那句 warning 就是孤证。
+
+    OIDC 自检的价值不在它自己那行输出，而在于下游能把「有没有签发方」
+    与随后那次失败对上号 —— 对不上号时，现场只剩「签名失败」四个字。
+    """
+    probe = _step_by_name("自检 OIDC")
+    assert probe.get("id"), "OIDC 自检步骤必须有 id，否则结论无人可读"

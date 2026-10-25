@@ -244,6 +244,7 @@ runs:
     # scripts/action-pack.sh 里做，那一步失败会判 3，并点名 job 需要 id-token: write。
     # 本步骤只给 warning、不拦流程 —— 自托管 runner 与 sign: 'false' 都不该被它卡住。
     - name: 自检 OIDC 签发方
+      id: oidc
       if: inputs.sign != 'false'
       shell: bash
       env:

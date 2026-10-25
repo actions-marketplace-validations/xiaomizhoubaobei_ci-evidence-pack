@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -974,7 +975,7 @@ def test_signed_verify_is_3_when_cosign_went_missing(workspace, tmp_path):
         INPUT_IDENTITY="https://github.com/acme/app/.github/workflows/ci.yml@refs/heads/main",
         INPUT_ISSUER="https://token.actions.githubusercontent.com",
         INPUT_EXPECT_SHA256=out["bundle-sha256"],
-        PATH="/usr/bin:/bin",  # 这里没有 cosign
+        PATH=f"{Path(sys.executable).parent}:/usr/bin:/bin",  # 这里没有 cosign，但保留运行测试的 python 路径
     )
     proc = _call("action-verify.sh", verify_env, cwd=workspace)
     assert proc.returncode == 3, proc.stdout + proc.stderr

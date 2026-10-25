@@ -187,6 +187,13 @@ runs:
           echo "::error::evidence-pack 需要 Python 3.10+，当前是 $(python3 -V 2>&1)"
           exit 1
         }
+        # CLI 核心依赖 typer：Action 开箱即用，避免调用方环境未安装导致 ModuleNotFoundError
+        if ! python3 -c 'import typer' >/dev/null 2>&1; then
+          python3 -m pip install --quiet 'typer>=0.12,<1.0' || {
+            echo "::error::typer 依赖安装失败，请检查网络或 runner pip 环境"
+            exit 3
+          }
+        fi
 
     # 只在真要签名时装。判据必须与 scripts/action-pack.sh 逐字一致：
     # 小写 'false' 才算关，空串 / 'yes' / '1' / 'True' 一律按默认（签名）处理。

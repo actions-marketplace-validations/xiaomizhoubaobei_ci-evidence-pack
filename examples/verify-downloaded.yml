@@ -25,7 +25,7 @@ jobs:
       - name: 取回 evidence-pack 的校验脚本
         uses: actions/checkout@v4
         with:
-          repository: XMZZUZHI/Github/ci-evidence-pack
+          repository: xiaomizhoubaobei/ci-evidence-pack
           ref: main
           path: .evidence-pack
 

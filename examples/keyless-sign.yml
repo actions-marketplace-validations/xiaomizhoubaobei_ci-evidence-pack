@@ -25,7 +25,7 @@ jobs:
 
       - name: 生成并签名证据包
         id: evidence
-        uses: XMZZUZHI/Github/ci-evidence-pack@6d8ae66b768b8a77fb691fcb88729c8fc13dd912
+        uses: xiaomizhoubaobei/ci-evidence-pack@6d8ae66b768b8a77fb691fcb88729c8fc13dd912
         with:
           include: dist/
           sbom: none

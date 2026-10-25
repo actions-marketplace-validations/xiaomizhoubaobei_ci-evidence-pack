@@ -23,7 +23,7 @@ permissions:
 steps:
   - uses: actions/checkout@v4
   # 钉到 SHA：浮动 @main 会让「跑的是哪一版」说不清
-  - uses: XMZZUZHI/Github/ci-evidence-pack@6d8ae66b768b8a77fb691fcb88729c8fc13dd912
+  - uses: xiaomizhoubaobei/ci-evidence-pack@6d8ae66b768b8a77fb691fcb88729c8fc13dd912
     id: evidence
     with:
       include: |
@@ -83,7 +83,7 @@ job summary（含 0/1/2/3 的含义），但不会把后续步骤掐断。
 ```yaml
 - uses: actions/checkout@v4
   with:
-    repository: XMZZUZHI/Github/ci-evidence-pack
+    repository: xiaomizhoubaobei/ci-evidence-pack
     path: .evidence-pack
 
 - shell: bash

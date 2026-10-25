@@ -39,7 +39,7 @@ jobs:
         id: evidence
         # 钉到 SHA，别用 @main：浮动引用会让「到底跑的是哪一版」永远说不清，
         # 修没修好也就无从判定。升级时换 SHA，换完再看一次自检结论。
-        uses: XMZZUZHI/Github/ci-evidence-pack@6d8ae66b768b8a77fb691fcb88729c8fc13dd912
+        uses: xiaomizhoubaobei/ci-evidence-pack@6d8ae66b768b8a77fb691fcb88729c8fc13dd912
         with:
           include: |
             dist/

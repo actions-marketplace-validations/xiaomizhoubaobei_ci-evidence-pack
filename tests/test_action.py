@@ -329,6 +329,22 @@ def test_examples_pin_action_to_a_full_sha():
             ), f"{path.name} 用了浮动引用：@{ref}"
 
 
+def test_references_point_at_the_github_repo():
+    """owner 路径必须是在 GitHub 上真实存在的那一个。
+
+    仓库的 origin 在 CNB（cnb.cool/XMZZUZHI/...），而 Action 示例是给
+    GitHub 用户照抄的：照着写 CNB 路径，`uses:` 在 GitHub 上直接找不到仓库。
+    版本一律钉 40 位 SHA 而不是 tag —— tag 可被移动，SHA 不会。
+    """
+    for path in EXAMPLES + [ROOT / "README.md", ROOT / "docs-usage.md"]:
+        text = path.read_text(encoding="utf-8")
+        for owner in re.findall(r"(?<![\w./-])([\w.-]+/[\w.-]+)/ci-evidence-pack", text):
+            assert owner == "xiaomizhoubaobei", (
+                f"{path.name} 指向了 {owner}/ci-evidence-pack，"
+                "GitHub 侧是 xiaomizhoubaobei/ci-evidence-pack"
+            )
+
+
 def test_every_output_has_description():
     for name, spec in _manifest()["outputs"].items():
         assert spec.get("description"), f"output {name} 缺说明"

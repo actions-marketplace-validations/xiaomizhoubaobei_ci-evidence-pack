@@ -1,26 +1,368 @@
 # evidence-pack
 
-把一次 CI 构建钉成一份可独立验证的证据包：确定性打包、严格 manifest、
-cosign bundle 签名、退出码 0/2/3 分层。
+把一次 CI 构建钉成一份**可独立验证**的证据包：确定性打包、严格 manifest、
+cosign 短期证书签名、退出码 0/1/2/3 分层。
 
-**签名是默认动作，而且只有一种签法**：用本次构建的 OIDC token 向 Fulcio
-换一张十分钟就过期的短期证书。项目里没有「长期私钥」这条路，也就没有
-「有私钥就用私钥、没有才想办法」的隐式 fallback —— 那种分支最后总会在某个
-job 上悄悄降级，而你不会收到通知。
+一句话说清它守的是什么：
 
-想不签，得显式说 `--no-sign` / `sign: 'false'` —— 并且自己准备好包外的
-sha256 锚点，否则这份包不构成证据。
+> 包里的 `manifest/sha256sum.txt` 只能证明包内自洽 —— 谁都能改内容再重算哈希。
+> 证据的信任根必须来自**包外**：签名，或者调用方手里的锚点。两者都没有，
+> `verify` 判 2，不吐绿。
 
 > 灵感来自 [OrygnsCode/ci-evidence-pack](https://github.com/OrygnsCode/ci-evidence-pack)（MIT）。
-> 只沿用它的思路（确定性打包、严格解包、双输出模式），签名层与 CLI 全部重写。
+> 只沿用思路（确定性打包、严格解包、双输出模式），签名层与 CLI 全部重写。
 
-## 为什么不是 fork
+## 三条硬规矩
 
-原项目的内核值得学，签名层不值得救：它产 `.sig` + `.crt` 两文件，
-而 cosign v3 已经废弃这套形态；`verify` 只信退出码，一个 `exit 0`
-的假 cosign 就能骗过它。与其 fork 过来背历史包袱，不如把内核重写一遍。
+| 规矩 | 落地方式 |
+|---|---|
+| 信任根必须在包外 | 无签名且无 `--expect-sha256` / `--expect-repo` 时判 2 |
+| 退出码语义不许混 | 2 = 证据无效（有人动过手脚），3 = 工具异常（流水线坏了） |
+| 确定性优先 | 时间戳统一取 `SOURCE_DATE_EPOCH`，文件排序显式指定 |
 
-## 贡献与签名
+签名只有一种签法：用本次构建的 OIDC token 向 Fulcio 换一张十分钟就过期的短期证书。
+项目里**没有**长期私钥这条路 —— 一把永不过期、泄露即永久被冒充的私钥，
+不该成为「拿不到 OIDC 时自动生效」的备选。想不签，得显式说 `--no-sign` / `sign: 'false'`，
+并自备包外 sha256 锚点。
+
+## 快速上手
+
+```bash
+pip install -e .        # 提供 evidence-pack 命令
+```
+
+不想装包也行，`PYTHONPATH=src python3 -m evidence_pack ...` 等价。
+
+验签需要 `cosign` v3+ 在 PATH 上；SBOM 需要 `cyclonedx-py` / `cyclonedx-npm`
+（两个都缺席时，Python 项目会退回内置解析，不静默出空 SBOM）。
+
+### 打包 + 签名（默认动作）
+
+```bash
+export SIGSTORE_ID_TOKEN=<平台注入的 OIDC token>
+evidence-pack pack --repo . --include dist --include configs --out _evidence \
+  --oidc-token-env SIGSTORE_ID_TOKEN \
+  --identity "https://github.com/org/repo/.github/workflows/ci.yml@refs/heads/main" \
+  --issuer "https://token.actions.githubusercontent.com" \
+  --json
+```
+
+> ⚠️ **`--out` 默认是 `dist`，而 `--out` 自身会被排除在收集范围之外。**
+> 如果你的产物目录恰好也叫 `dist`（很常见），两条规则会撞在一起，判 1：
+> `--include 'dist' 落在不可收范围内`。把输出换个名字（`--out _evidence`）即可。
+
+产物两份，都在 `--out` 下：
+
+```
+<slug>_<sha7>.tar.gz                 证据包
+<slug>_<sha7>.tar.gz.sigstore.json   签名 bundle（未签名时不存在）
+```
+
+`--json` 回一个结构化结果，打包侧关键字段：
+
+| 字段 | 含义 |
+|---|---|
+| `bundle_path` / `bundle_name` | 包的位置与文件名 |
+| `bundle_sha256` | **包外锚点就是它** |
+| `file_count` | 包内文件数（不含 manifest 自身） |
+| `source_date_epoch` | 这次打包用的确定性时间戳 |
+| `signed` / `signature_mode` | 是否签成、模式（恒为 `keyless`） |
+| `signature_bundle` | `.sigstore.json` 路径 |
+| `certificate_identity` / `certificate_issuer` | token 里的 `sub` / `iss`（回显便于核对） |
+| `cert_not_before` / `cert_not_after` | 短期证书的有效期窗口 |
+
+### 验包
+
+```bash
+# 1) 有签名：identity + issuer 必须一起给
+evidence-pack verify bundle.tar.gz \
+  --signature-bundle bundle.tar.gz.sigstore.json \
+  --identity "https://github.com/org/repo/.github/workflows/ci.yml@refs/heads/main" \
+  --issuer "https://token.actions.githubusercontent.com"
+
+# 2) 无签名：靠包外锚点（从你登记它的地方回送，别从包里读出来再回填）
+evidence-pack verify bundle.tar.gz --expect-sha256 "$ANCHOR"
+
+# 3) 只要结论、不让非零退出码掐断流水线（Action 内部就是这么用的）
+evidence-pack verify bundle.tar.gz --expect-sha256 "$ANCHOR" --exit-code --json
+```
+
+`verify` 的 `--json` 字段：
+
+| 字段 | 含义 |
+|---|---|
+| `ok` / `exit_code` / `error` / `error_kind` | 结论与失败原因（用法见「退出码」） |
+| `manifest_verified` | 包内逐文件哈希是否对得上 |
+| `signature_verified` | 签名**真的验过**没有（不只是「有签名」） |
+| `tlog_checked` | 透明日志条目查没查（`--insecure-ignore-tlog` 时为 `false`） |
+| `anchored` | 包外锚点是否核对通过 |
+| `anchor_warnings` | 锚点没能真正核对的说明（不是失败，是「这条锚点没起作用」） |
+| `repo` / `file_count` / `source_date_epoch` | 包内记录的回显 |
+
+## 退出码
+
+| 码 | 含义 | 触发点 | 该怎么办 |
+|---|---|---|---|
+| 0 | 证据通过 | 全绿，且有签名或包外锚点 | 绿灯 |
+| 1 | 用法错误 | 参数矛盾、`--include` 不存在、token 来源给两份、缺期望身份 | 重敲参数，与证据真伪无关 |
+| 2 | 证据无效 | 哈希不符、签名 invalid、identity 不匹配、锚点不符、无信任根 | 有人动过手脚，停止发版 |
+| 3 | 工具异常 | `cosign` 缺失、bundle 格式坏、SBOM 要而不得、OIDC 换不到 token | 别信结论，先修环境 |
+
+2 与 3 分开是刻意的：一个要追责，一个要修流水线，人工处置完全不同。
+
+## CLI 参考
+
+### `pack`
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--repo` | `.` | 仓库根目录 |
+| `--out` | `dist` | 输出目录（自动排除在收集范围外；若 `--include` 同名会判 1，换个名字即可） |
+| `--include` | 必填，可多次 | 要收进包的文件/目录，相对仓库根 |
+| `--exclude` | 空 | 额外排除的路径名（默认已排除 `.git` / `node_modules` / `dist` / `__pycache__` / `.venv` / `venv`） |
+| `--sbom` | `auto` | `auto` / `none` / `python` / `node` |
+| `--collect-git` / `--no-collect-git` | 开 | 是否采集 HEAD / 分支 / remote / dirty |
+| `--sign` / `--no-sign` | 签 | **唯一的签名开关**。关掉等于回到「包内自洽」，必须有包外锚点 |
+| `--oidc-token-env` | 空 | 从该环境变量读 token（推荐） |
+| `--oidc-token` | 空 | 直接给 token，会进 argv / `ps` / 日志，仅本地调试 |
+| `--fulcio-url` / `--rekor-url` | 公共实例 | 私有部署时覆盖；验签侧必须用同一套根 |
+| `--identity` / `--issuer` | 空 | 期望身份，只写进包内 `metadata/binding.json`，**不是签名开关** |
+| `--bundle-name` | `<slug>_<sha7>.tar.gz` | 自定义包名 |
+| `--quiet` / `-q` | 关 | 只吐一行结论（成功给 bundle 路径） |
+| `--json` | 关 | 结构化输出 |
+
+几条参数约束，一律判 1（用法错，与证据真伪无关）：
+
+- `--include` 一个都没给，或给了但路径不存在 / 匹配不到文件。
+- `--include .` —— 会把整个仓库连同输出目录一起装进去，要求显式列出。
+- `--include` 的路径落在 `.git` 或 `--out` 目录内 —— `.git` 里没有可复现的东西，
+  输出目录收进来会让包随版本雪球。
+- `--oidc-token` 与 `--oidc-token-env` 同时给 —— token 不该有两条来源。
+- 环境变量存在但为空 —— 静默当成「没签」比报错危险得多。
+- `--no-sign` 配上 token 或 `--identity` / `--issuer` —— 你让我别签，又给了我签名的料。
+- `--sbom python|node` 与实际项目类型冲突，或 `--sbom` 值不在 `auto/none/python/node` 里。
+- `SOURCE_DATE_EPOCH` 不是正整数。
+
+要签名却拿不到 token（`--oidc-token-env` 指向的变量为空）也判 1：那是「你没给身份」，
+而不是「工具坏了」。等 token 换不到证书时，才是 3。
+
+### `verify`
+
+| 参数 | 说明 |
+|---|---|
+| `<bundle>` | 证据包 `.tar.gz`（位置参数） |
+| `--signature-bundle` | `.sigstore.json`；不给则不验签名 |
+| `--identity` / `--issuer` | 期望签发身份。给了 `--signature-bundle` 却两者都不给 → 判 1（等于接受任何人的签名） |
+| `--insecure-ignore-tlog` | 跳过透明日志校验，结果里 `tlog_checked=false` |
+| `--expect-sha256` | 包外锚点：期望的 bundle sha256 |
+| `--expect-repo` | 包外锚点：期望的 `owner/repo` |
+| `--exit-code` | 失败也正常结束进程，结论放 JSON 的 `exit_code` 里 |
+| `--quiet` / `-q`、`--json` | 输出形态 |
+
+### `rekor`
+
+```bash
+evidence-pack rekor bundle.tar.gz.sigstore.json --json
+```
+
+列出签名 bundle 里的透明日志条目：`log_index` / `log_id` / `integrated_time` / `url`。
+查询地址落在**条目 uuid** 上（`/api/v1/log/entries/<entryUUID>`），不落在序号上 ——
+`?logIndex=N` 是给人翻页的过滤参数，不是定位符；`logId.keyId` 是**日志**公钥的摘要，
+拿它拼地址会打得开、但打不开对应条目。取不到 uuid 时宁可只给序号，也不给一个像模像样的死链。
+
+三种情形分开说：有条目 → 任何人可独立复核；签名了但无 tlog 条目 → **不能单独构成证据**（验签判 2）；
+本次未签名 → 没有透明日志条目，信任根只有正文里的 sha256 锚点。
+
+## 签名与验签
+
+### 信任根是那对 (identity, issuer)
+
+1. 平台给流水线一张 OIDC token，`sub` 写着「谁在跑」（workflow 路径 + ref），`iss` 写着「谁签发的」；
+2. cosign 拿 token 找 Fulcio 换一张十几分钟就过期的证书，私钥当场生成、签完即弃；
+3. 签名连同证书链、Rekor 条目一起封进 `.sigstore.json`。
+
+所以身份不是密钥。identity 请写死到**具体流水线文件**，别用通配 ——
+宽匹配等于让别人拿同一 issuer 下的任意 workflow 冒充你。`@` 后面那截跟着 ref 走：
+写死 `@refs/heads/main` 的流水线在 tag 上必然判 2，那不是配置笔误，是「签名身份不是我以为的那个」。
+
+token 只经 `SIGSTORE_ID_TOKEN` 进 cosign 子进程，**从不拼进 argv**。
+
+### 验签不信退出码
+
+原实现是「`cosign` 返回 0 就算验过」，于是一个 `exit 0` 的假 cosign 就能骗过它。
+这里除退出码外，还独立核对：
+
+1. bundle 的内容摘要 == 被打包文件的摘要（digest 绑定）；
+2. bundle 结构合法（有 `messageSignature` 或 DSSE 信封）；
+3. cosign 必须真的打出 `Verified OK`；
+4. bundle 里确有 tlog 条目，除非显式 `--insecure-ignore-tlog`。
+
+再加一条时间相容性：Rekor 记录的签名时刻若落在证书有效期之外，判 2 ——
+那不是这张证书签的。
+
+签出的 bundle **必须**带证书链和 tlog 条目，缺一样判 3（Fulcio/Rekor 没通）。
+
+### `metadata/binding.json` 不是信任根
+
+打包时给的 `--identity` / `--issuer` 会被写进包内 `binding.json`。
+它是打包方**声明**的期望身份，可以被伪造，所以只在你没显式给 `--identity/--issuer` 时用来填空。
+
+## SBOM
+
+`--sbom auto` 认出项目类型：
+`pyproject.toml` / `setup.py` / `requirements.txt` / `poetry.lock` → python，`package.json` → node，
+都认不出 → `none`（不判错）。
+
+Python 侧依赖清单的取值顺序：`cyclonedx-py`（有 `poetry.lock` 或 `requirements.txt` 时）→
+`requirements.txt` 内置解析 → `pyproject.toml` 的 PEP 621 依赖表。明确要了却拿不到 → 判 3，
+绝不静默出个空 SBOM。
+
+扫描器自带的 `metadata.timestamp` 与 `serialNumber` 会被归一化：前者取 `SOURCE_DATE_EPOCH`，
+后者由内容派生 —— 否则同一个 commit 打两次包会得到两个哈希，可复现就是句空话。
+
+## 包内布局
+
+```
+artifacts/<rel_path>         --include 收进来的文件，保留仓库内相对路径
+metadata/metadata.json       工具名、版本、format_version、SOURCE_DATE_EPOCH
+metadata/run.json           CI 上下文（GitHub / CNB / GitLab，采到什么记什么）
+metadata/git.json           HEAD sha、分支、remote_url、describe、dirty（非 git 仓库则不产）
+metadata/binding.json       声明的期望身份（给了 --identity/--issuer 才有）
+metadata/deps.json          SBOM 形态（产出 SBOM 时才有）
+sbom/sbom.cdx.json          CycloneDX
+manifest/inputs.json        收进来的文件清单与被跳过的路径
+manifest/sha256sum.txt      除自身外每个文件的 sha256（严格模式的依据）
+```
+
+解包侧只接受普通文件和目录：绝对路径、`..` 穿越、符号链接、硬链接、设备文件一律拒绝，
+解压总量超 4 GiB 判解压炸弹 —— 证据包是别人给你的，解包环节本身就是攻击面。
+
+## 作为 GitHub Action
+
+```yaml
+permissions:
+  contents: read
+  id-token: write          # 签名的全部信任根：没有它就换不到 OIDC token
+
+steps:
+  - uses: actions/checkout@v4
+  - uses: XMZZUZHI/Github/ci-evidence-pack@6d8ae66b768b8a77fb691fcb88729c8fc13dd912
+    id: evidence
+    with:
+      include: |
+        dist/
+        configs/
+      sbom: auto
+      # identity 留空 = 按本次触发的 repository + workflow + ref 自动拼
+      anchor-file: _evidence/anchor.txt
+      expect-repo: ${{ github.repository }}
+```
+
+| 输入 | 默认 | 说明 |
+|---|---|---|
+| `include` | 必填 | 一行一个，支持 `#` 注释 |
+| `exclude` | 空 | 额外排除的目录名 |
+| `sbom` | `auto` | `auto` / `none` / `python` / `node` |
+| `out-dir` | `_evidence` | 输出目录 |
+| `bundle-name` | `evidence-<短sha>.tar.gz` | 包名 |
+| `sign` | `'true'` | 只有小写 `'false'` 才算关。条件传值用 `cond && 'false' \|\| ''`，别直接传 outputs（会渲染成 `'False'`） |
+| `identity` / `issuer` | 按触发 ref 自动拼 / GitHub OIDC | 期望签发身份 |
+| `verify` | `true` | 打完包立刻自检 |
+| `expect-sha256` / `expect-repo` | 空 / `github.repository` | 包外锚点 |
+| `anchor-file` | 空 | 追加登记 sha256 的文件（包外台账） |
+| `upload-artifact` / `artifact-name` | `true` / 包 sha 前 16 位 | 是否上传、传成什么名字 |
+| `retention-days` | `30` | artifact 保留天数 |
+| `fail-on-invalid` | `true` | 自检结论为 2/3 时是否让步骤失败 |
+
+主要 output：`bundle-path` / `bundle-name` / `bundle-sha256` / `signature-bundle` /
+`signature-mode` / `signed` / `signature-verified` / `anchored` / `verify-ok` /
+`verify-exit-code` / `verify-error` / `file-count` / `source-date-epoch` / `artifact-name` / `anchor-file`。
+
+Action 是 composite 的：不往调用方的解释器里 `pip install`，只把本仓库的 `src` 塞进 `PYTHONPATH`
+（缺 `typer` 时补装那一个包）；cosign 默认就装，只有 `sign: 'false'` 才跳过。
+
+### 自检通过 ≠ 包外那份账对上了
+
+`expect-sha256` 留空时，Action 回送的是**本 job 上一步刚算出来的**摘要。
+签名默认开启之后这条路必然走成 0 —— 它验的是「刚打出来的东西」，不是「包外登记过的那份账」。
+
+所以请把 `verify-ok` 读成「产物在步骤之间没被动过」，别读成「这份包来自我以为的那个人」。
+真正的锚点是：`anchor-file` 落下的那行 sha256、Release 正文里的 sha256，或签名里的 `identity`。
+
+### OIDC 权限
+
+`id-token` 默认是 `none`，且 **job 级 `permissions` 一旦写了就是白名单**：
+顶层给了 `id-token: write` 不算，job 里重写 `permissions` 会把它覆盖掉。
+
+| 情况 | 怎么办 |
+|---|---|
+| GitHub 托管 runner | 加 `id-token: write`，OIDC 换短期证书 |
+| 自托管 / 本地，没有 OIDC 签发方 | 显式 `sign: 'false'`，并自备包外 sha256 锚点 |
+
+两条路都不走又不肯关签名，Action 会以退出码 3 报出「缺 OIDC token」，而不是静默不签 ——
+一份「以为签了其实没签」的证据，比没有证据更危险。
+
+顺带澄清一个坑：`ACTIONS_ID_TOKEN_REQUEST_TOKEN` 是**换 token 的凭据**，不是 token 本体。
+把它当 token 用，Fulcio 只会回 401，现场看起来跟「`id-token: write` 没开」一模一样。
+判据必须是「有没有签发方」。
+
+### 关于 `expect-repo` 的边界
+
+包内若记了 git remote，就据此核对，不符判 2 —— 这条没得商量。
+包内没有 remote 元数据时（`actions/checkout` 的默认检出、剥离了 `.git` 的构建上下文），
+**不把它当篡改** —— 不会报「锚点不符」，因为缺元数据是采集环境的问题。
+后果要说实话：**这条锚点等于不生效**，`anchored` 保持 `false`。
+此时若又没签名、也没 `--expect-sha256`，最终仍按「无信任根」判 2，
+而错误里只会说「既无签名也无外部锚点」，不会单独点名 `--expect-repo`
+（`anchor_warnings` 只在包内确实有 remote 记录、但核对环节另有遗漏时才会带上说明）。
+
+想要一条真能核对的锚点：用 `--expect-sha256`，别指望 `expect-repo`
+在没有 remote 的检出里替你兜底。
+
+## 接入自己的流水线
+
+完整示例见 [`examples/`](examples)：发版即取证（`release.yml`，照抄可用）、
+最小可用（`pack-and-verify.yml`）、显式签名（`keyless-sign.yml`）、
+下游校验取回的包（`verify-downloaded.yml`）、GitHub 专用发版（`github-release.yml`）。
+CNB / GitLab / 自托管的接法与常见坑见 [`docs-usage.md`](docs-usage.md)。
+
+本仓库自身的 [`release.yml`](.github/workflows/release.yml) 就是「发版即取证」的活例子：
+Release 正文里除了锚点，还列出每一条透明日志条目的序号与查询地址；
+同一 tag 重跑不会改写既有正文 —— 锚点一旦被覆盖，之前所有下游核对都会对不上。
+
+## 开发
+
+```bash
+pip install -e ".[dev]"
+python -m pytest -q            # 签名用例用假 cosign 跑，本机不需要装真的
+pre-commit install             # 提交前门禁
+pre-commit run --all-files
+```
+
+测试不依赖真实 cosign / Fulcio / Rekor：签名与验签的边界靠一个可控的假 cosign
+来钉住（包括「退出码 0 但没打 `Verified OK`」这种欺骗路径）。
+
+模块分工：
+
+| 模块 | 职责 |
+|---|---|
+| `cli.py` | Typer 入口：`pack` / `verify` / `rekor` / `version`，退出码分流 |
+| `collect.py` | 按 `--include/--exclude` 收集输入，保留仓库相对路径 |
+| `fsutil.py` | 排序、遍历、哈希、`SOURCE_DATE_EPOCH` 解析、确定性 tar |
+| `packer.py` | 组包：artifacts / metadata / sbom / manifest，产出 tar.gz，默认签名 |
+| `sbom.py` | CycloneDX 生成（要而不得即退出码 3） |
+| `signing.py` | cosign keyless 签名、验签、`.sigstore.json` 与 Rekor 条目解析 |
+| `verifier.py` | 安全解包 + manifest 校验 + 签名校验 + 包外锚点比对 |
+| `errors.py` | 异常类型 ↔ 退出码映射 |
+
+改布局等于改 `FORMAT_VERSION`；改 `pack` 的输出（文件集合、哈希、metadata 字段）
+必须同时考虑确定性测试 —— 同一输入两次打包产物哈希必须一致。
+
+时间戳取值顺序：`SOURCE_DATE_EPOCH` 环境变量 → 最后一次提交时间 → 当前时间，
+永不落 0；环境变量非法直接判 1。包名里的短 sha 也来自 git，同一个 commit
+打两次包文件名相同。
+
+### 提交与签名
 
 提交前请读 [`AGENTS.md`](AGENTS.md)。本仓库开启 commit 签名，**commit 前必须先跑**：
 
@@ -33,287 +375,9 @@ bash install_gpg_keys.sh
 脚本幂等、适配无 TTY 容器，末尾做真实 `git commit -S` 闭环自检，失败即退出非零。
 无变量、无分发地址时直接报错 —— 这是刻意的：凭据不落仓库。
 
-## 当 Action 用
+`pre-commit` 管代码长相，`install_gpg_keys.sh` 管「提交有没有签名」，两件事互不替代。
+门禁拦下的问题一律在本地修掉，不要用 `--no-verify` 绕过。
 
-```yaml
-# 签名要 OIDC token；缺了 id-token: write 会判退出码 3
-permissions:
-  contents: read
-  id-token: write          # 签名的全部信任根
+## 许可
 
-steps:
-  - uses: actions/checkout@v4
-  - uses: XMZZUZHI/Github/ci-evidence-pack@6d8ae66b768b8a77fb691fcb88729c8fc13dd912
-    id: evidence
-    with:
-      include: |
-        dist/
-        configs/
-      sbom: auto
-      # 签名是默认动作，没有第二种身份可选。
-      # 只有明确写 sign: 'false' 才会不签名 —— 那时信任根必须来自包外锚点。
-      identity: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/heads/main
-      anchor-file: _evidence/anchor.txt     # 把 sha256 留在包外
-```
-
-产物与结论都能当 output 用：
-
-| output | 说明 |
-|---|---|
-| `bundle-path` / `bundle-name` | 证据包位置 |
-| `bundle-sha256` | 包外锚点就是它 |
-| `signature-bundle` | `.sigstore.json`，未签名为空 |
-| `signature-mode` | `keyless`（OIDC 短期证书），未签名为空 |
-| `signed` | 是否产出了签名 |
-| `verify-ok` / `verify-exit-code` / `verify-error` | 自检结论、0/1/2/3 与失败原因 |
-| `signature-verified` / `anchored` | 签名真的验过没有、包外锚点核对过没有 |
-
-Action 是 composite 的，不往调用方的解释器里 `pip install`，只把本仓库的
-`src` 塞进 `PYTHONPATH`；cosign 默认就装上（因为默认要签名），
-只有写 `sign: 'false'` 时才跳过。
-
-完整示例见 [`examples/`](examples)：**发版即取证**（`release.yml`，照抄即可）、
-最小可用、显式签名、下游校验各一份。
-
-只想尽快用起来，直接把 [`examples/release.yml`](examples/release.yml) 复制到
-你仓库的 `.github/workflows/` 下，改一处：`include` 里的产物路径。
-不需要任何密钥 —— 信任根是 job 的 OIDC token。
-
-### OIDC 权限：默认签名绕不开的一步
-
-签名默认开启，而它唯一的信任根是平台签发的 OIDC token（换短期证书用）。
-所以 job 必须显式打开 OIDC 权限：
-
-```yaml
-permissions:
-  contents: read
-  id-token: write   # 签名的全部信任根：没有它就拿不到 OIDC token
-```
-
-`id-token` 默认是 `none`，且 **job 级 `permissions` 一旦写了就是白名单**：
-顶层给了 `id-token: write` 不算，job 里重写 `permissions` 就会把它覆盖掉。
-
-两条路，任选其一：
-
-| 情况 | 怎么办 |
-|---|---|
-| GitHub 托管 runner | 加 `id-token: write`，OIDC 换短期证书（推荐） |
-| 自托管 / 本地，没有 OIDC 签发方 | 显式 `sign: 'false'`，并自备包外 sha256 锚点 |
-
-没有第三条「私钥兜底」的路：长期私钥要在 CI 里注入口令，泄露一次就永久被冒充，
-它不该是那个在你拿不到 OIDC 时自动生效的备选。
-两条路都不走又不肯关签名，Action 会当场以退出码 3 报出「缺 OIDC token」，
-而不是静默不签 —— 一份「以为签了其实没签」的证据，比没有证据更危险。
-
-顺带一句：OIDC token 有时效（GitHub 上是 job 级、短期），且只在 job 运行期间有效。
-拿它签完的包，验证时不依赖 token，只依赖包内的证书链 + `--identity` / `--issuer`。
-
-### 自检通过 ≠ 包外那份账对上了
-
-`verify` 步骤没拿到 `expect-sha256` 时，回送的是**本 job 上一步刚算出来的**摘要。
-签名默认开启之后，这条路必然走成 0 —— 它验的是「刚打出来的东西」，
-不是「包外登记过的那份账」。自托管 runner 上被引导去 `sign: 'false'` 的人反而没有这个问题：
-那条路上没有签名兜底，没锚点就如实判 2。
-
-所以请把 `verify-ok` 读成「产物在步骤之间没被动过」，别读成「这份包来自我以为的那个人」。
-真正的锚点是：
-
-- `anchor-file` 落下来的那行 sha256（再上传到制品库 / 审计库），或
-- Release 正文里写下的 sha256，或
-- 签名里的 `identity` —— 那才是「谁跑的这次构建」。
-
-### 关于 `expect-repo`
-
-包内若记了 git remote，`expect-repo` 就据此核对，不符判 2；
-包内没有 remote 元数据（`actions/checkout` 检出的默认形态、以及剥离了 `.git`
-的构建上下文都是这样）时，**不判无效**，而是在 `anchor_warnings` 里说明
-「这条锚点没起作用」。缺元数据是采集环境的问题，不是篡改的证据。
-
-实话说清这个边界的后果：仓库没配 remote 时，`--expect-repo` **完全不生效** ——
-`anchor_warnings` 是空的，只有最终那句「无锚点」的错误里能看出它没起作用。
-要一条真能核对的锚点，用 `--expect-sha256`，别指望 `expect-repo`
-在没有 remote 的检出里替你兜底。
-
-### 关于 SBOM
-
-`sbom: auto` 认出 Python 项目后，依赖清单按这个顺序取：
-`requirements.txt` → `poetry.lock`/`pipenv`（交给 cyclonedx-py）→
-`pyproject.toml` 的 PEP 621 依赖表。都没有才判 3。
-Action 会按项目类型自动补装 `cyclonedx-bom` / `@cyclonedx/cyclonedx-npm`，
-Python 3.10 还会补 `tomli`（标准库 `tomllib` 要 3.11 才有）。
-
-扫描器自带的 `metadata.timestamp` 与 `serialNumber` 会被归一化：
-前者取 `SOURCE_DATE_EPOCH`，后者由内容派生。不这么做，
-同一个 commit 打两次包会得到两个哈希 —— 可复现就是句空话。
-
-## 安装（本地 / 脚本调用）
-
-```bash
-pip install -e ".[dev]"
-```
-
-验签需要 `cosign` v3+ 在 PATH 上。SBOM 需要 `cyclonedx-py` / `cyclonedx-npm`；
-Python 项目缺 `cyclonedx-py` 时会退到 `requirements.txt` 的内置解析，不静默出空 SBOM。
-
-## 用法
-
-```bash
-# 打包 + 签名（默认）：用 OIDC token 换 Fulcio 短期证书
-export SIGSTORE_ID_TOKEN=<平台注入的 OIDC token>
-evidence-pack pack --repo . --include dist --oidc-token-env SIGSTORE_ID_TOKEN \
-  --identity "https://github.com/org/repo/.github/workflows/ci.yml@refs/heads/main"
-
-# 不签名（此时必须有包外锚点才算证据）。--no-sign 是唯一的关闭方式
-evidence-pack pack --repo . --include dist --no-sign
-
-# 验包：带外部锚点
-evidence-pack verify bundle.tar.gz --expect-sha256 <hex>
-
-# 验包：身份必须写死到具体 workflow 文件
-evidence-pack verify bundle.tar.gz \
-  --signature-bundle bundle.tar.gz.sigstore.json \
-  --identity "https://github.com/org/repo/.github/workflows/ci.yml@refs/heads/main" \
-  --issuer "https://token.actions.githubusercontent.com"
-
-# 只取结论，不让退出码中断流水线（Action 内部就是这么用的）
-evidence-pack verify bundle.tar.gz --expect-sha256 <hex> --exit-code --json
-```
-
-## 签名：OIDC 换短期证书
-
-没有长期私钥可管，身份来自 CI 平台签发的 OIDC token：
-
-1. 平台给流水线一张 token，里面 `sub` 写着"谁在跑"（workflow 路径 + ref），
-   `iss` 写着"谁签发的"（平台的 OIDC issuer）；
-2. cosign 拿 token 找 Fulcio 换一张**十几分钟就过期**的证书，私有钥当场生成、签完即弃；
-3. 签名连同证书链、Rekor 条目一起封进 `.sigstore.json`。
-
-所以信任根不是密钥，而是**那对 (identity, issuer)**。验签时必须同时给：
-
-```bash
-evidence-pack verify bundle.tar.gz \
-  --signature-bundle bundle.tar.gz.sigstore.json \
-  --identity "https://cnb.cool/<org>/<repo>/-/build.yml@refs/heads/main" \
-  --issuer "https://oidc.cnb.cool"
-```
-
-identity 请写死到具体流水线文件，别用通配 —— 宽匹配等于让别人拿同一 issuer 下的
-任意 workflow 冒充你。
-
-### token 从哪进
-
-| 写法 | 用途 |
-|---|---|
-| `--oidc-token-env VAR` | **推荐**。从环境变量读，token 只进子进程环境 |
-| `--oidc-token <jwt>` | 仅本地调试。会进命令行历史、`ps` 和作业日志 |
-
-两条来源同时给会直接判 1。变量存在但为空同样判 1 —— CI 里权限没开、secret 没配
-是最常见的事故，静默当成"没签"比报错危险得多。
-
-token 只经 `SIGSTORE_ID_TOKEN` 进子进程，**从不拼进 argv**。私有 Fulcio / Rekor 用
-`--fulcio-url` / `--rekor-url` 指过去，验签侧必须用同一套根，否则证书链对不上判 2。
-
-### 透明日志条目（Rekor）
-
-签名写入 Rekor 之后，证明「这条签名在某个时刻存在过」就不再只依赖你手里那串
-sha256 —— 日志本身是第二个落点，而且它记在哪里不由你决定。所以发版的正文里
-该写的是**可复核的位置**，不是一句「已存证」：
-
-```bash
-# 从签名 bundle 里取出条目（logIndex / logId / integratedTime / 查询地址）
-evidence-pack rekor bundle.tar.gz.sigstore.json
-```
-
-查询地址落在**条目 uuid** 上，形如
-`https://rekor.sigstore.dev/api/v1/log/entries/<entryUUID>`：
-
-```bash
-rekor-cli get --rekor_server https://rekor.sigstore.dev --log-index 3456762397
-```
-
-别拼 `?logIndex=3456762397` —— 那是给人翻页看的过滤参数，不是定位符；
-同样，`logId.keyId` 是**日志**公钥的摘要，不是条目坐标，拿它拼地址会打得开、
-但打不开这条条目。取不到 uuid 时 CLI 宁可只给序号，也不给一个像模像样的死链。
-
-三种情形分开说，不许含糊：
-
-| 情形 | 结论 |
-|---|---|
-| 有条目 | 给出 logIndex 与查询地址，任何人可独立复核 |
-| 签名了但无 tlog 条目 | 签名缺公开落点，**不能单独构成证据**（verify 判 2） |
-| 本次未签名 | 没有透明日志条目，信任根只有正文里的 sha256 锚点 |
-
-本仓库的 `release.yml` 就是这么做的：Release 正文里除了锚点，还列出每一条
-透明日志条目的序号与查询地址。同一 tag 重跑不会改写既有正文 —— 锚点一旦被
-覆盖，之前所有下游核对都会对不上。
-
-### 短期证书的边界
-
-证书窗口很短，所以判定也短：
-
-- 签出的 bundle **必须**带证书链和 tlog 条目，缺一样判 3（Fulcio/Rekor 没通）
-- 验签时 Rekor 记录的签名时刻若落在证书有效期之外，判 2 —— 那不是这张证书签的
-- `--insecure-ignore-tlog` 可以跳过 tlog，但结果里 `tlog_checked` 会是 `false`，如实标注
-
-## 退出码
-
-| 码 | 含义 | 该怎么办 |
-|---|---|---|
-| 0 | 证据通过 | 绿灯 |
-| 1 | 用法错误 | 参数敲错了，与证据真伪无关 |
-| 2 | 证据无效 | 哈希不符 / 签名 invalid / identity 不匹配 / 锚点不符 |
-| 3 | 工具异常 | cosign 缺失、bundle 格式坏、SBOM 要而不得 —— 别信结论，修环境 |
-
-2 和 3 分开是刻意的：前者意味着「有人动过手脚」，后者意味着「流水线坏了」。
-
-## 包内布局
-
-```
-artifacts/<rel_path>        收进来的文件，保留仓库内相对路径
-metadata/metadata.json      工具版本、格式版本、SOURCE_DATE_EPOCH
-metadata/run.json           CI 上下文（GitHub / CNB / GitLab，采到就记）
-metadata/git.json           HEAD sha、branch、remote、dirty
-metadata/binding.json       打包方声明的期望签发身份（给了 --identity/--issuer 才有）
-sbom/sbom.cdx.json          CycloneDX（要得到就必须有）
-manifest/inputs.json        输入清单
-manifest/sha256sum.txt      除自身外每个文件的 sha256
-```
-
-## 一条重要的判定
-
-**manifest 自洽 ≠ 证据有效。** manifest 和内容躺在同一个包里，
-谁都能改内容再重算哈希表。所以 `verify` 在既没有签名、也没有
-`--expect-sha256` / `--expect-repo` 时，会明确判为「不构成证据」
-并返回 2，而不是像常见做法那样吐一个绿色的 0。
-
-证据的信任根必须来自包外：签名，或者调用方手里的锚点。
-
-`metadata/binding.json` 也一样 —— 它是打包方**声明**的期望身份，可以被伪造，
-所以只在调用方没显式给 `--identity/--issuer` 时用来填空，绝不能当信任根。
-
-## 测试
-
-```bash
-python -m pytest -q
-```
-
-签名相关测试需要 `cosign`，没有则自动跳过。
-
-## 提交前检查（pre-commit）
-
-```bash
-pip install pre-commit
-pre-commit install          # 装进 .git/hooks，之后每次 commit 自动跑
-pre-commit run --all-files  # 想一次跑全量时用这个
-```
-
-管的是代码长相，和 `install_gpg_keys.sh` 管的「提交有没有签名」是两件事，
-两者都在本地跑，不依赖平台。hook 覆盖：EOF/空白/大文件/私钥泄露/YAML·TOML 语法、
-`black`、`flake8`、`isort`、`mypy`、`pydocstyle`。
-
-两处刻意的口径，改之前先看：
-
-- `isort` 钉在 `9.0.2`，不是上游最新的 `10.0.0b1` —— 后者要求 Python ≥3.11，
-  而本项目最低支持 3.10，装上直接报错。
-- `pydocstyle` 关掉 `D415`（`.pydocstyle` 里写了理由）：它只认半角 `.` 收尾，
-  而本仓库文档一律中文、句末是全角「。」。不关的话工具和仓库规范互相打架。
+MIT，见 [LICENSE](LICENSE)。

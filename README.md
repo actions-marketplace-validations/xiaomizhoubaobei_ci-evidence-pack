@@ -224,6 +224,17 @@ sha256 —— 日志本身是第二个落点，而且它记在哪里不由你决
 evidence-pack rekor bundle.tar.gz.sigstore.json
 ```
 
+查询地址落在**条目 uuid** 上，形如
+`https://rekor.sigstore.dev/api/v1/log/entries/<entryUUID>`：
+
+```bash
+rekor-cli get --rekor_server https://rekor.sigstore.dev --log-index 3456762397
+```
+
+别拼 `?logIndex=3456762397` —— 那是给人翻页看的过滤参数，不是定位符；
+同样，`logId.keyId` 是**日志**公钥的摘要，不是条目坐标，拿它拼地址会打得开、
+但打不开这条条目。取不到 uuid 时 CLI 宁可只给序号，也不给一个像模像样的死链。
+
 三种情形分开说，不许含糊：
 
 | 情形 | 结论 |

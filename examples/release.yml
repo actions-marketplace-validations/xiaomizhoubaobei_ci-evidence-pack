@@ -104,6 +104,7 @@ jobs:
               print(f"- logIndex `{e['log_index']}`，integratedTime `{e['integrated_time']}`")
               if e["log_id"]:
                   print(f"  - logId `{e['log_id']}`")
+              # 地址落在条目 uuid 上（/api/v1/log/entries/<uuid>），不是 ?logIndex=。
               if e["url"]:
                   print(f"  - 查询地址 {e['url']}")
           PY

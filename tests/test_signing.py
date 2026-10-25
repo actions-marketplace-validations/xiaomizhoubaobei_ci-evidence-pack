@@ -243,13 +243,22 @@ def _bundle_with_tlog(tmp_path: Path, entries: list[dict] | None) -> Path:
     return bundle
 
 
+# 条目 uuid：照公共实例的真实形态抄的（80 位，不是文档里常见的 64 位）。
+# 拿过短的假值做夹具，会把「只认 64 位」这种错钉成通过。
+ENTRY_UUID = (
+    "108e9186e8c5677a43bb4c318a4da4ce4d6ba8ae1f2d499efa95096e74d13cac8f782789fa3e8fa7"
+)
+LOG_KEY_ID = "a" * 64
+
+
 def test_rekor_entries_flattens_log_index_and_url(tmp_path):
     bundle = _bundle_with_tlog(
         tmp_path,
         [
             {
                 "logIndex": "987654321",
-                "logId": {"keyId": "abcd"},
+                "logId": {"keyId": LOG_KEY_ID},
+                "logIndexKeyId": {"logId": LOG_KEY_ID, "entryId": ENTRY_UUID},
                 "integratedTime": "1700000000",
             }
         ],
@@ -257,11 +266,12 @@ def test_rekor_entries_flattens_log_index_and_url(tmp_path):
     entries = rekor_entries(bundle)
     assert len(entries) == 1
     assert entries[0]["log_index"] == "987654321"
-    assert entries[0]["log_id"] == "abcd"
+    assert entries[0]["log_id"] == LOG_KEY_ID
     # 时间给人看，序号给机器核：两种都要有，少一样正文就白写了。
     assert entries[0]["integrated_time"].startswith("2023-11-14T22:13:20")
+    # 地址必须落在条目 uuid 上：`?logIndex=` 是过滤参数，照它取不到条目。
     assert entries[0]["url"] == (
-        "https://rekor.sigstore.dev/api/v1/log/entries?logIndex=987654321"
+        f"https://rekor.sigstore.dev/api/v1/log/entries/{ENTRY_UUID}"
     )
 
 
@@ -269,10 +279,19 @@ def test_rekor_entries_respects_custom_rekor_url(tmp_path):
     """私有 Rekor 部署时，地址不能写死成公共实例 —— 那会把人引到错的日志。"""
     bundle = _bundle_with_tlog(
         tmp_path,
-        [{"logIndex": "7", "logId": {"keyId": "k"}, "integratedTime": "1700000000"}],
+        [
+            {
+                "logIndex": "7",
+                "logId": {"keyId": LOG_KEY_ID},
+                "logIndexKeyId": {"logId": LOG_KEY_ID, "entryId": ENTRY_UUID},
+                "integratedTime": "1700000000",
+            }
+        ],
     )
     entries = rekor_entries(bundle, rekor_url="https://rekor.internal/")
-    assert entries[0]["url"] == "https://rekor.internal/api/v1/log/entries?logIndex=7"
+    assert entries[0]["url"] == (
+        f"https://rekor.internal/api/v1/log/entries/{ENTRY_UUID}"
+    )
 
 
 def test_rekor_entries_empty_when_no_tlog(tmp_path):
@@ -280,9 +299,22 @@ def test_rekor_entries_empty_when_no_tlog(tmp_path):
     assert rekor_entries(_bundle_with_tlog(tmp_path, None)) == []
 
 
-def test_rekor_entries_does_not_invent_url_without_index(tmp_path):
-    """序号缺了就宁可不给地址：拼一个空的 logIndex 比不给更误导。"""
-    bundle = _bundle_with_tlog(tmp_path, [{"integratedTime": "1700000000"}])
+def test_rekor_entries_does_not_invent_url_without_uuid(tmp_path):
+    """取不到条目 uuid 就宁可不给地址：拼一个打不开的地址比不给更误导。
+
+    注意 logId.keyId 也是 64 位十六进制 —— 拿它当 uuid 拼地址，
+    会得到一个 HTTP 200 但内容不是这条条目的端点。
+    """
+    bundle = _bundle_with_tlog(
+        tmp_path,
+        [
+            {
+                "logIndex": "1",
+                "logId": {"keyId": LOG_KEY_ID},
+                "integratedTime": "1700000000",
+            }
+        ],
+    )
     entries = rekor_entries(bundle)
-    assert entries[0]["log_index"] == ""
+    assert entries[0]["log_index"] == "1"
     assert entries[0]["url"] == ""

@@ -482,6 +482,35 @@ def verify(
     return result
 
 
+# 查询地址落在条目的 uuid 上，不落在序号上。Rekor 的 entries 端点只认
+# `/api/v1/log/entries/<entryUUID>`；`?logIndex=N` 是给人读的过滤参数，
+# 不是可独立复核的定位符（换实例、换版本都可能不再成立）。
+# uuid 就是条目在透明日志里的坐标，logIndex 只是它的一个属性。
+#
+# 长度得实测，不能凭印象：公共实例回的是 80 位（日志公钥的 sha256 + 条目叶子哈希），
+# 不是文档里常见的 64 位。宁可留余量，也不要把合法条目一概判成「没有 uuid」。
+ENTRY_UUID_LENS = (64, 80)
+
+
+def _entry_uuid(entry: dict) -> str:
+    """从 tlogEntries 的一条里取出条目 uuid（取不到返回空串）。
+
+    Sigstore Bundle 把条目坐标放在 `logIndexKeyId.*` 里，而 `logId.keyId`
+    是**日志**公钥的 sha256 —— 两者长度都是 64 位十六进制，混用会拼出一个
+    打得开、但打不开对应条目的地址。所以这里按字段名取，不按形状猜。
+    """
+    uuid = entry.get("entryId")
+    if not isinstance(uuid, str):
+        anchor = entry.get("logIndexKeyId")
+        uuid = anchor.get("entryId") if isinstance(anchor, dict) else None
+    if not isinstance(uuid, str):
+        return ""
+    text = uuid.strip().lower()
+    if len(text) not in ENTRY_UUID_LENS:
+        return ""
+    return text if all(c in "0123456789abcdef" for c in text) else ""
+
+
 def rekor_entries(
     bundle: Path, *, rekor_url: str | None = None
 ) -> list[dict[str, str]]:
@@ -489,8 +518,7 @@ def rekor_entries(
 
     Release 正文要展示透明日志，展示的必须是**可点、可复核**的位置，而不是一句
     「已写入 Rekor」。所以这里只挑四样：条目所在的日志（logId）、它在日志里的
-    序号（logIndex）、integratedTime（Rekor 说「这一刻我收下了」），以及按序号
-    拼出来的查询地址。
+    序号（logIndex）、integratedTime（Rekor 说「这一刻我收下了」），以及查询地址。
 
     logId 是日志公钥的 sha256，不同 Rekor 实例（公共 / 私有）值不同，
     因此地址也从 rekor_url 拼，不写死 rekor.sigstore.dev。
@@ -509,15 +537,17 @@ def rekor_entries(
         log = entry.get("logId")
         log_id = log.get("keyId") if isinstance(log, dict) else None
         integrated = str(entry.get("integratedTime") or "")
+        uuid = _entry_uuid(entry)
         entries.append(
             {
                 "log_id": log_id or "",
                 "log_index": index,
+                # 缺 uuid 就宁可不给地址：`?logIndex=` 那种拼法看着像端点，
+                # 实际拿不到条目 —— 那才是真正会误导人的东西。
+                "url": f"{base}/api/v1/log/entries/{uuid}" if uuid else "",
                 "integrated_time": (
                     _fmt(int(integrated)) if integrated.isdigit() else ""
                 ),
-                # 序号为空时不给地址：拼一个 /api/v1/log/entries/ 的空壳比不给更坏。
-                "url": f"{base}/api/v1/log/entries?logIndex={index}" if index else "",
             }
         )
     return entries

@@ -338,7 +338,9 @@ def test_references_point_at_the_github_repo():
     """
     for path in EXAMPLES + [ROOT / "README.md", ROOT / "docs-usage.md"]:
         text = path.read_text(encoding="utf-8")
-        for owner in re.findall(r"(?<![\w./-])([\w.-]+/[\w.-]+)/ci-evidence-pack", text):
+        for owner in re.findall(
+            r"(?<![\w./-])([\w.-]+/[\w.-]+)/ci-evidence-pack", text
+        ):
             assert owner == "xiaomizhoubaobei", (
                 f"{path.name} 指向了 {owner}/ci-evidence-pack，"
                 "GitHub 侧是 xiaomizhoubaobei/ci-evidence-pack"

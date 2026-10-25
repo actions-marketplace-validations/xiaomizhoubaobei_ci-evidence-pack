@@ -60,8 +60,28 @@ def _repo(tmp_path: Path) -> Path:
     return repo
 
 
+# 宿主环境里与 OIDC 有关的变量：干净开发机上没有，GitHub runner 上一定有。
+# 留着它们，「不签名」的用例会被脚本判成「有 OIDC、按默认签名走」（脚本的判定
+# 是「有没有签发方」，而 runner 上还额外给了换 token 的凭据），于是一批本该
+# 走 --no-sign 的断言在 CI 上集体变红；换 token 的用例也会拿到真实端点。
+# 这类变量一律由用例显式给，不从宿主继承。
+_HOST_OIDC_VARS = (
+    "ACTIONS_ID_TOKEN_REQUEST_URL",
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    "SIGSTORE_ID_TOKEN",
+    "INPUT_SIGN",
+    "INPUT_IDENTITY",
+    "INPUT_ISSUER",
+    "SOURCE_DATE_EPOCH",
+)
+
+
 def _env(tmp_path: Path, **overrides) -> dict:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("INPUT_")}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("INPUT_") and k not in _HOST_OIDC_VARS
+    }
     env.update(
         {
             "PATH": os.environ["PATH"],

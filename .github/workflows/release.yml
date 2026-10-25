@@ -65,7 +65,42 @@ jobs:
           # identity 留空 = 按本次触发的 ref 自动生成（tag 上就是 @refs/tags/v0.0.1）。
           expect-repo: ${{ github.repository }}
 
-      - name: 挂到 Release 并把锚点写进正文
+      # 正文里的透明日志段落由这个脚本产出：把 JSON 折成 Markdown 的活放进 Python，
+      # shell 只负责拼接 —— 在 `{ }` 里嵌 heredoc 能跑，但括号与缩进一错就极难看出。
+      # 单独成步是因为它**必须**先于发布步骤存在：先写工具，再用工具。
+      - name: 准备透明日志段落生成器
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          cat > rekor_section.py <<'PY'
+          """把 rekor.json 折成 Release 正文里的一段 Markdown。
+
+          三种情形必须说清是哪一种，不许含糊成一句「已存证」：
+          未签名 / 无 tlog 条目 / 有条目。判断的是「证据强度」，不是「流程跑没跑完」。
+          """
+          import json
+          import os
+
+          entries = json.load(open("rekor.json", encoding="utf-8")).get("entries") or []
+          signed = bool(os.environ.get("SIGNATURE"))
+
+          if not signed:
+              print("- 本次未签名，因而没有透明日志条目；信任根只有正文里的 sha256 锚点。")
+          elif not entries:
+              print("- 签名 bundle 内**没有**透明日志条目：这条签名缺少可复核的公开落点，")
+              print("  不能单独构成证据。请检查 Rekor 连通性与 `--rekor-url`。")
+          else:
+              for entry in entries:
+                  index = entry.get("log_index") or "未记录"
+                  when = entry.get("integrated_time") or "未记录"
+                  print(f"- logIndex `{index}`，integratedTime `{when}`")
+                  if entry.get("log_id"):
+                      print(f"  - logId `{entry['log_id']}`")
+                  if entry.get("url"):
+                      print(f"  - 查询地址 {entry['url']}")
+          PY
+          echo "透明日志段落生成器已就位"
+
+      - name: 挂到 Release 并把锚点与透明日志写进正文
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -94,6 +129,33 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" --generate-notes \
             "${BUNDLE}" ${SIGNATURE:+"${SIGNATURE}"}
 
+          # 透明日志条目从签名 bundle 里读，不从日志文本里抠：logIndex / logId
+          # 只有 bundle 那一处是权威的。交给本仓库的 CLI 解析，免得在 YAML 里
+          # 手搓 jq —— 字段一改名，表达式会静默变成空值，正文照样发得出去。
+          #
+          # 解析失败不拦发布：它只意味着「这条签名没有可复核的公开落点」。
+          # 正文里如实写明，比让整条 Release 消失更接近事实。
+          entries=0
+          if [ -n "${SIGNATURE}" ] && [ -f "${SIGNATURE}" ]; then
+            # typer 由前面「自测」那步的 `pip install -e ".[dev]"` 带进来。不依赖它
+            # 也行，但别让现场只看到一句 ModuleNotFoundError —— 那是这条链路上
+            # 最容易被误读成「bundle 坏了」的一种报错。
+            if ! python3 -c 'import typer' >/dev/null 2>&1; then
+              python3 -m pip install --quiet 'typer>=0.12,<1.0' \
+                || echo "::warning::typer 装不上，透明日志条目将标注「未取到」"
+            fi
+            if PYTHONPATH="${GITHUB_WORKSPACE}/src" \
+                 python3 -m evidence_pack.cli rekor "${SIGNATURE}" --json > rekor.json; then
+              entries="$(python3 -c 'import json;print(json.load(open("rekor.json"))["count"])')"
+            else
+              echo "::warning::解析透明日志条目失败，正文将标注「未取到」"
+              echo '{"entries":[]}' > rekor.json
+            fi
+          else
+            # 未签名就没有 Rekor 条目可言 —— 这是设计内的情形，不该装成解析失败。
+            echo '{"entries":[]}' > rekor.json
+          fi
+
           gh release view "${GITHUB_REF_NAME}" --json body -q .body > body.md
           {
             echo ""
@@ -107,5 +169,19 @@ jobs:
             echo '```bash'
             echo "evidence-pack verify evidence-*.tar.gz --expect-sha256 ${SHA256}"
             echo '```'
+            echo ""
+            echo "### 透明日志（Rekor）"
+            echo ""
+            echo "签名写入公开透明日志后，任何人都能在包外独立复核「这条签名在某个时刻确实存在过」。"
+            echo "这是 sha256 锚点之外的第二个落点：锚点记在哪里由你决定，日志记在哪里由密码学决定。"
+            echo ""
+            python3 rekor_section.py
+            echo ""
+            if [ "${entries}" != "0" ]; then
+              echo '```bash'
+              echo "# 逐条复核：序号就是上面的 logIndex"
+              echo "rekor-cli get --rekor_server https://rekor.sigstore.dev --log-index <logIndex>"
+              echo '```'
+            fi
           } >> body.md
           gh release edit "${GITHUB_REF_NAME}" --notes-file body.md

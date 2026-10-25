@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from evidence_pack.errors import EvidenceInvalid, ToolFailure, UsageError
-from evidence_pack.signing import sign, verify
+from evidence_pack.signing import rekor_entries, sign, verify
 
 pytestmark = pytest.mark.skipif(
     shutil.which("sh") is None or os.name != "posix",
@@ -223,3 +223,66 @@ def test_real_cosign_banner_is_not_reported_as_the_error(tmp_path, blob, monkeyp
     assert detail.startswith("signing /tmp/blob.bin")
     assert "Fulcio returned 400" in detail
     assert "personal data" not in detail
+
+
+# --- 透明日志条目的展示层契约 -------------------------------------------------
+# Release 正文要写的是「可复核的位置」，不是一句「已存证」。所以这几个用例钉的是
+# 字段名与地址的拼法 —— 拼错了正文照样发得出去，只是没人能照着核对。
+
+
+def _bundle_with_tlog(tmp_path: Path, entries: list[dict] | None) -> Path:
+    bundle = tmp_path / "b.sigstore.json"
+    bundle.write_text(
+        json.dumps(
+            {
+                "messageSignature": {"messageDigest": {"digest": "AAAA"}},
+                "verificationMaterial": {"tlogEntries": entries or []},
+            }
+        )
+    )
+    return bundle
+
+
+def test_rekor_entries_flattens_log_index_and_url(tmp_path):
+    bundle = _bundle_with_tlog(
+        tmp_path,
+        [
+            {
+                "logIndex": "987654321",
+                "logId": {"keyId": "abcd"},
+                "integratedTime": "1700000000",
+            }
+        ],
+    )
+    entries = rekor_entries(bundle)
+    assert len(entries) == 1
+    assert entries[0]["log_index"] == "987654321"
+    assert entries[0]["log_id"] == "abcd"
+    # 时间给人看，序号给机器核：两种都要有，少一样正文就白写了。
+    assert entries[0]["integrated_time"].startswith("2023-11-14T22:13:20")
+    assert entries[0]["url"] == (
+        "https://rekor.sigstore.dev/api/v1/log/entries?logIndex=987654321"
+    )
+
+
+def test_rekor_entries_respects_custom_rekor_url(tmp_path):
+    """私有 Rekor 部署时，地址不能写死成公共实例 —— 那会把人引到错的日志。"""
+    bundle = _bundle_with_tlog(
+        tmp_path,
+        [{"logIndex": "7", "logId": {"keyId": "k"}, "integratedTime": "1700000000"}],
+    )
+    entries = rekor_entries(bundle, rekor_url="https://rekor.internal/")
+    assert entries[0]["url"] == "https://rekor.internal/api/v1/log/entries?logIndex=7"
+
+
+def test_rekor_entries_empty_when_no_tlog(tmp_path):
+    """无 tlog 是「不构成证据」，不是崩溃：展示层返回空列表，判定交给 verify。"""
+    assert rekor_entries(_bundle_with_tlog(tmp_path, None)) == []
+
+
+def test_rekor_entries_does_not_invent_url_without_index(tmp_path):
+    """序号缺了就宁可不给地址：拼一个空的 logIndex 比不给更误导。"""
+    bundle = _bundle_with_tlog(tmp_path, [{"integratedTime": "1700000000"}])
+    entries = rekor_entries(bundle)
+    assert entries[0]["log_index"] == ""
+    assert entries[0]["url"] == ""

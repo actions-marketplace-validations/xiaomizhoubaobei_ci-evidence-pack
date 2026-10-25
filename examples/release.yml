@@ -76,13 +76,41 @@ jobs:
             --clobber
           # 锚点也贴进 Release 正文：将来核对时从包外读，而不是从包里翻。
           gh release view "${GITHUB_REF_NAME}" --json body -q .body > body.md
-          {
-            echo ""
-            echo "### 证据包锚点"
-            echo ""
-            echo "- sha256: \`${{ steps.evidence.outputs.bundle-sha256 }}\`"
-            echo "- 签名: ${{ steps.evidence.outputs.signature-mode || '未签名（以 sha256 为锚点）' }}"
-          } >> body.md
+          cat >> body.md <<'MD'
+
+          ### 证据包锚点
+
+          - sha256: `${{ steps.evidence.outputs.bundle-sha256 }}`
+          - 签名: ${{ steps.evidence.outputs.signature-mode || '未签名（以 sha256 为锚点）' }}
+
+          ### 透明日志（Rekor）
+
+          签名写入公开透明日志后，任何人都能在包外独立复核「这条签名在某个时刻确实存在过」。
+          这是 sha256 锚点之外的第二个落点：锚点记在哪里由你决定，日志记在哪里由密码学决定。
+
+          MD
+          # 条目从签名 bundle 里读，不从日志文本里抠 —— logIndex / logId 只有那一处是权威的。
+          # 读不出来不拦发布：它只意味着「这条签名没有可复核的公开落点」，正文里如实写。
+          sig="${{ steps.evidence.outputs.signature-bundle }}"
+          if [ -n "$sig" ] && evidence-pack rekor "$sig" --json > rekor.json; then
+            python3 - <<'PY' >> body.md
+          import json
+
+          entries = json.load(open("rekor.json", encoding="utf-8"))["entries"]
+          if not entries:
+              print("- 签名 bundle 内**没有**透明日志条目：这条签名缺少可复核的公开落点，")
+              print("  不能单独构成证据。请检查 Rekor 连通性与 `--rekor-url`。")
+          for e in entries:
+              print(f"- logIndex `{e['log_index']}`，integratedTime `{e['integrated_time']}`")
+              if e["log_id"]:
+                  print(f"  - logId `{e['log_id']}`")
+              if e["url"]:
+                  print(f"  - 查询地址 {e['url']}")
+          PY
+            rm -f rekor.json
+          else
+            echo "- 本次未签名或条目解析失败，因而没有透明日志条目；信任根只有上方 sha256 锚点。" >> body.md
+          fi
           gh release edit "${GITHUB_REF_NAME}" --notes-file body.md
 
       - name: 清掉临时密钥

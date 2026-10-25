@@ -1067,3 +1067,55 @@ def test_oidc_probe_step_can_be_referenced_by_callers():
     """
     probe = _step_by_name("自检 OIDC")
     assert probe.get("id"), "OIDC 自检步骤必须有 id，否则结论无人可读"
+
+
+# ---------------------------------------------------------------------------
+# 发版流水线自己的契约：正文里要出现透明日志条目，且两个闸门都得在。
+# 这两条一旦被改掉，流水线照样绿 —— 只是发出去的正文少了可复核的位置。
+# ---------------------------------------------------------------------------
+
+
+def _release_workflow() -> dict:
+    return yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    )
+
+
+def _release_publish_step() -> dict:
+    steps = _release_workflow()["jobs"]["release"]["steps"]
+    for step in steps:
+        if str(step.get("name", "")).startswith("挂到 Release"):
+            return step
+    raise AssertionError("release.yml 里找不到挂 Release 的步骤")
+
+
+def test_release_body_lists_rekor_entries():
+    """Release 正文必须写透明日志条目，而不是一句「已存证」。"""
+    run = _release_publish_step()["run"]
+    assert "### 透明日志（Rekor）" in run
+    assert "logIndex" in run
+    # 条目要从本仓库 CLI 读，不许在 YAML 里手搓 jq：字段一改名就静默变空。
+    assert "evidence_pack.cli rekor" in run
+
+
+def test_release_refuses_to_publish_unverified_evidence():
+    """自检不为 0 就不许发 —— 这条闸门不能被透明日志的改动顺手冲掉。"""
+    run = _release_publish_step()["run"]
+    assert "VERIFY_CODE" in run
+    assert "exit 1" in run
+
+
+def test_release_never_rewrites_existing_body():
+    """同一 tag 重跑不许改既有正文：锚点被覆盖，下游核对全部失效。"""
+    run = _release_publish_step()["run"]
+    assert "gh release view" in run
+    assert "已存在" in run
+
+
+def test_release_generator_step_runs_before_publish():
+    """生成器必须先于用到它的步骤存在，否则 Release 正文会缺一整段。"""
+    steps = _release_workflow()["jobs"]["release"]["steps"]
+    names = [str(s.get("name", "")) for s in steps]
+    gen = next(i for i, n in enumerate(names) if n.startswith("准备透明日志"))
+    pub = next(i for i, n in enumerate(names) if n.startswith("挂到 Release"))
+    assert gen < pub, f"生成器在第 {gen} 步，发布在第 {pub} 步：顺序反了"

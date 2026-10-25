@@ -18,7 +18,12 @@ from . import __version__
 from .errors import EXIT_OK, EvidenceError, UsageError
 from .packer import PackOptions
 from .packer import pack as run_pack
-from .signing import DEFAULT_FULCIO_URL, DEFAULT_REKOR_URL, resolve_oidc_token
+from .signing import (
+    DEFAULT_FULCIO_URL,
+    DEFAULT_REKOR_URL,
+    rekor_entries,
+    resolve_oidc_token,
+)
 from .verifier import VerifyOptions
 from .verifier import verify as run_verify
 
@@ -302,6 +307,47 @@ def _verify_reporting(
         )
         return
     typer.echo(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False))
+
+
+@app.command()
+def rekor(
+    signature_bundle: Path = typer.Argument(..., help="签名 bundle .sigstore.json"),
+    rekor_url: str = typer.Option(
+        None, "--rekor-url", help=f"Rekor 地址，默认 {DEFAULT_REKOR_URL}"
+    ),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """列出签名 bundle 里的透明日志条目。
+
+    这些东西（logId / logIndex / integratedTime）是包外锚点之外的第二处落点：
+    只要 Rekor 还在，就能独立核出「这条签名曾经在某个时刻存在过」。
+    所以发版正文里该写的是可复核的序号，不是一句「已存证」。
+    """
+    try:
+        entries = rekor_entries(signature_bundle, rekor_url=rekor_url)
+    except EvidenceError as exc:
+        _fail(exc, as_json=as_json)
+        return
+    if as_json:
+        typer.echo(
+            json.dumps(
+                {"ok": True, "count": len(entries), "entries": entries},
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+        )
+        return
+    if not entries:
+        # 无条目是「不构成证据」而不是「坏了」，所以不算失败，但必须说清楚。
+        typer.echo("未找到透明日志条目：这份 bundle 不足以证明签名存在过。")
+        return
+    for entry in entries:
+        typer.echo(f"logIndex:        {entry['log_index'] or '(未记录)'}")
+        typer.echo(f"logId:           {entry['log_id'] or '(未记录)'}")
+        typer.echo(f"integratedTime:  {entry['integrated_time'] or '(未记录)'}")
+        typer.echo(f"url:             {entry['url'] or '(未记录)'}")
+        typer.echo("")
 
 
 @app.command()

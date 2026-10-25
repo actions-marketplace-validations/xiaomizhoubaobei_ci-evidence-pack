@@ -482,6 +482,47 @@ def verify(
     return result
 
 
+def rekor_entries(
+    bundle: Path, *, rekor_url: str | None = None
+) -> list[dict[str, str]]:
+    """把 bundle 里的 Rekor 条目摊平成「人能照着核对」的几条字段。
+
+    Release 正文要展示透明日志，展示的必须是**可点、可复核**的位置，而不是一句
+    「已写入 Rekor」。所以这里只挑四样：条目所在的日志（logId）、它在日志里的
+    序号（logIndex）、integratedTime（Rekor 说「这一刻我收下了」），以及按序号
+    拼出来的查询地址。
+
+    logId 是日志公钥的 sha256，不同 Rekor 实例（公共 / 私有）值不同，
+    因此地址也从 rekor_url 拼，不写死 rekor.sigstore.dev。
+
+    取不到就返回空列表：无 tlog 的 bundle 本来就不构成证据（verify 会判 2），
+    这里是展示层，不替判定做决定。
+    """
+    data = _check_bundle_structure(bundle)
+    material = data.get("verificationMaterial") or {}
+    base = (rekor_url or DEFAULT_REKOR_URL).rstrip("/")
+    entries: list[dict[str, str]] = []
+    for entry in material.get("tlogEntries") or []:
+        if not isinstance(entry, dict):
+            continue
+        index = str(entry.get("logIndex") or "")
+        log = entry.get("logId")
+        log_id = log.get("keyId") if isinstance(log, dict) else None
+        integrated = str(entry.get("integratedTime") or "")
+        entries.append(
+            {
+                "log_id": log_id or "",
+                "log_index": index,
+                "integrated_time": (
+                    _fmt(int(integrated)) if integrated.isdigit() else ""
+                ),
+                # 序号为空时不给地址：拼一个 /api/v1/log/entries/ 的空壳比不给更坏。
+                "url": f"{base}/api/v1/log/entries?logIndex={index}" if index else "",
+            }
+        )
+    return entries
+
+
 def _check_certificate_window(data: dict) -> None:
     """核对短期证书的有效期与 bundle 里的签名时间是否相容。
 

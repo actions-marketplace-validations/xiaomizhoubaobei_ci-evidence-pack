@@ -435,3 +435,53 @@ def test_missing_cosign_under_default_sign_is_exit_3(tmp_path):
         expect=EXIT_TOOL_FAILURE,
     )
     assert "cosign" in json.loads(js.stdout)["error"]
+
+
+# --- rekor 子命令：Release 正文化的入口 ---------------------------------------
+# 它在流水线里被调用，解析错一个字段，正文里就会安静地少一条可复核的位置。
+
+
+def _sigstore_bundle(tmp_path: Path, tlog: list[dict] | None) -> Path:
+    bundle = tmp_path / "ev.sigstore.json"
+    bundle.write_text(
+        json.dumps(
+            {
+                "messageSignature": {"messageDigest": {"digest": "AAAA"}},
+                "verificationMaterial": {"tlogEntries": tlog or []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return bundle
+
+
+def test_rekor_json_lists_entries(tmp_path):
+    bundle = _sigstore_bundle(
+        tmp_path,
+        [
+            {
+                "logIndex": "123",
+                "logId": {"keyId": "ab"},
+                "integratedTime": "1700000000",
+            }
+        ],
+    )
+    proc = run("rekor", str(bundle), "--json", expect=EXIT_OK)
+    payload = json.loads(proc.stdout)
+    assert payload["count"] == 1
+    assert payload["entries"][0]["log_index"] == "123"
+    assert payload["entries"][0]["log_id"] == "ab"
+
+
+def test_rekor_without_tlog_is_not_an_error(tmp_path):
+    """无条目不等于命令坏了：它是「这份包不足以证明签名存在过」的事实。"""
+    bundle = _sigstore_bundle(tmp_path, None)
+    proc = run("rekor", str(bundle), "--json", expect=EXIT_OK)
+    assert json.loads(proc.stdout)["count"] == 0
+
+
+def test_rekor_on_non_bundle_is_exit_3(tmp_path):
+    """不是 bundle 是工具层面的输入错，按契约给 3，不能报成「证据无效」。"""
+    junk = tmp_path / "junk.json"
+    junk.write_text('{"hello": "world"}', encoding="utf-8")
+    run("rekor", str(junk), "--json", expect=EXIT_TOOL_FAILURE)

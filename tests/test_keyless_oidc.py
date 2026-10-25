@@ -275,3 +275,106 @@ def test_verify_accepts_signature_inside_cert_window(tmp_path, monkeypatch):
     assert result.verified and result.mode == "keyless"
     assert result.tlog_checked is True
     assert result.cert_not_after is not None
+
+
+def _sign_with_material(tmp_path: Path, monkeypatch, material: dict) -> Path:
+    """用假 cosign 签一份 verificationMaterial 由调用方决定的 bundle。"""
+    blob = tmp_path / "b.bin"
+    blob.write_bytes(b"x")
+    bundle = tmp_path / "b.sigstore.json"
+    payload = json.dumps(
+        {
+            "messageSignature": {
+                "messageDigest": {"digest": base64.b64encode(b"\x00" * 32).decode()}
+            },
+            "verificationMaterial": material,
+        }
+    )
+    fake = _fake_cosign(
+        tmp_path,
+        f"cat > \"{bundle}\" <<'BUNDLE'\n{payload}\nBUNDLE\nexit 0\n",
+    )
+    monkeypatch.setenv("PATH", f"{fake}:{os.environ['PATH']}")
+    return bundle
+
+
+def test_sign_accepts_bundle_v03_single_certificate(tmp_path, monkeypatch):
+    """v0.3+ 把叶子证书挪到了 verificationMaterial.certificate。
+
+    认不出这一形态，cosign v3 签出来的包会被当成「没换来短期证书」判 3 ——
+    这就是本 PR 要修的那件事。
+    """
+    bundle = _sign_with_material(
+        tmp_path,
+        monkeypatch,
+        {
+            "certificate": {"rawBytes": "Zm9v"},
+            "tlogEntries": [{"integratedTime": "1700000000"}],
+        },
+    )
+    result = sign(tmp_path / "b.bin", bundle, oidc_token=TOKEN)
+    assert result.signed and result.mode == "keyless"
+    assert result.tlog_checked is True
+
+
+def test_sign_still_accepts_bundle_v02_certificate_chain(tmp_path, monkeypatch):
+    """老形态不能被新分支挤掉：证书链还在，就继续按证书链认。"""
+    bundle = _sign_with_material(
+        tmp_path,
+        monkeypatch,
+        {
+            "x509CertificateChain": {"certificates": [{"rawBytes": "Zm9v"}]},
+            "tlogEntries": [{"integratedTime": "1700000000"}],
+        },
+    )
+    result = sign(tmp_path / "b.bin", bundle, oidc_token=TOKEN)
+    assert result.signed and result.tlog_checked is True
+
+
+def test_sign_prefers_single_certificate_over_empty_chain(tmp_path, monkeypatch):
+    """两种形态并存、且证书链是空的时候，不能因为链空就判 3。"""
+    bundle = _sign_with_material(
+        tmp_path,
+        monkeypatch,
+        {
+            "certificate": {"rawBytes": "Zm9v"},
+            "x509CertificateChain": {"certificates": []},
+            "tlogEntries": [{"integratedTime": "1700000000"}],
+        },
+    )
+    result = sign(tmp_path / "b.bin", bundle, oidc_token=TOKEN)
+    assert result.signed
+
+
+def test_sign_rejects_certificate_without_raw_bytes(tmp_path, monkeypatch):
+    """有 certificate 字段但里面没有 rawBytes，等于没证书：仍判工具异常（3）。"""
+    bundle = _sign_with_material(
+        tmp_path,
+        monkeypatch,
+        {
+            "certificate": {"foo": "bar"},
+            "tlogEntries": [{"integratedTime": "1700000000"}],
+        },
+    )
+    with pytest.raises(ToolFailure, match="证书"):
+        sign(tmp_path / "b.bin", bundle, oidc_token=TOKEN)
+
+
+def test_verify_reads_certificate_window_from_v03_certificate(tmp_path, monkeypatch):
+    """v0.3+ 形态下证书窗口照样要核对：不能因为字段搬家就不查了。"""
+    raw = _der_with_window(
+        datetime.now(timezone.utc), datetime.now(timezone.utc) + timedelta(minutes=10)
+    )
+    far_future = int((datetime.now(timezone.utc) + timedelta(days=365)).timestamp())
+    bundle = _verify_bundle(tmp_path, raw, far_future)
+    data = json.loads(bundle.read_text())
+    material = data["verificationMaterial"]
+    material["certificate"] = {
+        "rawBytes": material.pop("x509CertificateChain")["certificates"][0]["rawBytes"]
+    }
+    bundle.write_text(json.dumps(data))
+
+    fake = _fake_verify(tmp_path)
+    monkeypatch.setenv("PATH", f"{fake}:{os.environ['PATH']}")
+    with pytest.raises(EvidenceInvalid, match="有效期"):
+        verify(tmp_path / "b.bin", bundle, identity=IDENTITY, issuer=ISSUER)

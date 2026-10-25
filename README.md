@@ -91,7 +91,8 @@ evidence-pack verify bundle.tar.gz --expect-sha256 "$ANCHOR" --exit-code --json
 
 | 字段 | 含义 |
 |---|---|
-| `ok` / `exit_code` / `error` / `error_kind` | 结论与失败原因（用法见「退出码」） |
+| `ok` / `exit_code` | 结论（语义见「退出码」），两条路径**都有** |
+| `error` / `error_kind` | 失败原因。**只有失败路径有**；成功（`ok=true`）时不出现这两个键，别按表硬读 |
 | `manifest_verified` | 包内逐文件哈希是否对得上 |
 | `signature_verified` | 签名**真的验过**没有（不只是「有签名」） |
 | `tlog_checked` | 透明日志条目查没查（`--insecure-ignore-tlog` 时为 `false`） |
@@ -152,12 +153,16 @@ evidence-pack verify bundle.tar.gz --expect-sha256 "$ANCHOR" --exit-code --json
 |---|---|
 | `<bundle>` | 证据包 `.tar.gz`（位置参数） |
 | `--signature-bundle` | `.sigstore.json`；不给则不验签名 |
-| `--identity` / `--issuer` | 期望签发身份。给了 `--signature-bundle` 却两者都不给 → 判 1（等于接受任何人的签名） |
+| `--identity` / `--issuer` | 期望签发身份。调用方没给时，用包内 `metadata/binding.json` 的声明兜底；**兜底后仍缺一个** → 判 1（等于接受任何人的签名） |
 | `--insecure-ignore-tlog` | 跳过透明日志校验，结果里 `tlog_checked=false` |
 | `--expect-sha256` | 包外锚点：期望的 bundle sha256 |
 | `--expect-repo` | 包外锚点：期望的 `owner/repo` |
 | `--exit-code` | 失败也正常结束进程，结论放 JSON 的 `exit_code` 里 |
 | `--quiet` / `-q`、`--json` | 输出形态 |
+
+要包外钉死身份时，**两个都显式传**：`binding.json` 是打包方自己写的**声明**，
+随包一起送来，谁改了包谁就能改它。它的作用是「省略参数时有个默认期望值」，
+不是信任根 —— 真正的信任仍来自 cosign 对证书链与 tlog 的校验。
 
 ### `rekor`
 
@@ -230,7 +235,7 @@ metadata/git.json           HEAD sha、分支、remote_url、describe、dirty（
 metadata/binding.json       声明的期望身份（给了 --identity/--issuer 才有）
 metadata/deps.json          SBOM 形态（产出 SBOM 时才有）
 sbom/sbom.cdx.json          CycloneDX
-manifest/inputs.json        收进来的文件清单与被跳过的路径
+manifest/inputs.json        收进来的文件清单，以及被排除规则挡下的路径（skipped）
 manifest/sha256sum.txt      除自身外每个文件的 sha256（严格模式的依据）
 ```
 
@@ -287,7 +292,12 @@ Action 是 composite 的：不往调用方的解释器里 `pip install`，只把
 签名默认开启之后这条路必然走成 0 —— 它验的是「刚打出来的东西」，不是「包外登记过的那份账」。
 
 所以请把 `verify-ok` 读成「产物在步骤之间没被动过」，别读成「这份包来自我以为的那个人」。
-真正的锚点是：`anchor-file` 落下的那行 sha256、Release 正文里的 sha256，或签名里的 `identity`。
+
+`anchor-file` 也**不是**信任根，它只是本 job 顺手写下的一行台账 —— 未经登记就拿回来核对，
+等于用自己刚产出的摘要给自己发证。它要变成锚点，得先被搬到包外一个受保护、不可变、
+调用方读得到但改不了的地方（审计库、制品库的元数据、Release 正文、工单），
+下一次核验再从**那里**取出来喂给 `--expect-sha256`。
+真正的信任根只有两条：签名里的 `identity`，或已登记到包外的那份 sha256。
 
 ### OIDC 权限
 
@@ -312,9 +322,15 @@ Action 是 composite 的：不往调用方的解释器里 `pip install`，只把
 包内没有 remote 元数据时（`actions/checkout` 的默认检出、剥离了 `.git` 的构建上下文），
 **不把它当篡改** —— 不会报「锚点不符」，因为缺元数据是采集环境的问题。
 后果要说实话：**这条锚点等于不生效**，`anchored` 保持 `false`。
-此时若又没签名、也没 `--expect-sha256`，最终仍按「无信任根」判 2，
-而错误里只会说「既无签名也无外部锚点」，不会单独点名 `--expect-repo`
-（`anchor_warnings` 只在包内确实有 remote 记录、但核对环节另有遗漏时才会带上说明）。
+这里有个容易读反的地方，两条路径分开说：
+
+| 路径 | `anchor_warnings` | 说明 |
+|---|---|---|
+| 普通成功（无签名，但 `--expect-sha256` 对上） | **有**这条 warning | 结果里 `anchored=true`（靠 sha256），同时如实记下 `--expect-repo` 没起作用 |
+| `--exit-code` 因无信任根判 2 | **没有**这条 warning | 失败结果只填 `error`/`error_kind`，`anchor_warnings` 是空列表；错误正文也不会点名 `--expect-repo` |
+
+换句话说：warning 只在「结论仍然是绿的」时候出现，提醒你绿得没那么足；
+真判了 2，就不要指望从 warning 里找细节，细节不在那儿。
 
 想要一条真能核对的锚点：用 `--expect-sha256`，别指望 `expect-repo`
 在没有 remote 的检出里替你兜底。
@@ -361,6 +377,15 @@ pre-commit run --all-files
 时间戳取值顺序：`SOURCE_DATE_EPOCH` 环境变量 → 最后一次提交时间 → 当前时间，
 永不落 0；环境变量非法直接判 1。包名里的短 sha 也来自 git，同一个 commit
 打两次包文件名相同。
+
+**「同一输入两次打包哈希一致」是有前提的**：必须有一个固定的时间源。
+既没有 git 历史、又没设 `SOURCE_DATE_EPOCH` 时，实现会退到当前时间（秒级），
+连打两次可以落在两个不同的秒上，产物哈希随之不同 —— 那不是 bug，是前提没给。
+所以要么保证构建上下文带 `.git`，要么显式固定时间源：
+
+```bash
+export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+```
 
 ### 提交与签名
 

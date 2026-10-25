@@ -208,10 +208,21 @@ def _keyless_env(
 
 
 def _require_identity(identity: str | None, issuer: str | None) -> None:
-    """没有期望身份就等于没验：前移到本地拦下，不把宽松判断交给 cosign。"""
+    """没有期望身份就等于没验：前移到本地拦下，不把宽松判断交给 cosign。
+
+    缺哪个要点名哪个：包内 metadata/binding.json 允许只写一半
+    （pack 时 --identity/--issuer 各写各的，缺的那个落成空串），
+    只缺 issuer 时若还说「必须同时提供两者」，读的人会以为自己一个都没给。
+    """
     if not identity or not issuer:
+        missing = " 与 ".join(
+            name
+            for name, value in (("--identity", identity), ("--issuer", issuer))
+            if not value
+        )
         raise UsageError(
-            "必须同时提供 --identity 与 --issuer，否则等于接受任何人的签名。"
+            f"缺少 {missing}：必须同时提供 --identity 与 --issuer，"
+            "否则等于接受任何人的签名。"
         )
 
 

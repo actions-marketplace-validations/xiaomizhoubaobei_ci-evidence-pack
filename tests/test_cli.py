@@ -148,6 +148,66 @@ def test_verify_with_anchor_is_exit_0(tmp_path):
     assert json.loads(js.stdout)["anchored"] is True
 
 
+def test_json_success_omits_error_fields(tmp_path):
+    """成功结果里没有 error / error_kind —— 这两个键只属于失败路径。
+
+    文档把四个字段并排写成一行时，调用方会照表去取不存在的键，
+    于是 `payload["error"]` 在成功时抛 KeyError。字段的有无要钉死在用例里。
+    """
+    import hashlib
+
+    r = repo(tmp_path)
+    out = run(
+        "pack",
+        "--repo",
+        str(r),
+        "--out",
+        "dist",
+        "--include",
+        "src",
+        "--sbom",
+        "none",
+        "--no-sign",
+        "--quiet",
+        cwd=r,
+        env={"SOURCE_DATE_EPOCH": "1700000000"},
+        expect=EXIT_OK,
+    ).stdout.strip()
+    sha = hashlib.sha256(Path(out).read_bytes()).hexdigest()
+    payload = json.loads(
+        run("verify", out, "--expect-sha256", sha, "--json", expect=EXIT_OK).stdout
+    )
+    assert payload["ok"] is True
+    assert "error" not in payload
+    assert "error_kind" not in payload
+
+
+def test_json_failure_carries_error_fields(tmp_path):
+    r = repo(tmp_path)
+    out = run(
+        "pack",
+        "--repo",
+        str(r),
+        "--out",
+        "dist",
+        "--include",
+        "src",
+        "--sbom",
+        "none",
+        "--no-sign",
+        "--quiet",
+        cwd=r,
+        env={"SOURCE_DATE_EPOCH": "1700000000"},
+        expect=EXIT_OK,
+    ).stdout.strip()
+    payload = json.loads(
+        run("verify", out, "--json", expect=EXIT_EVIDENCE_INVALID).stdout
+    )
+    assert payload["ok"] is False
+    assert payload["error_kind"] == "evidence_invalid"
+    assert payload["error"]
+
+
 def test_signing_without_cosign_is_exit_3(tmp_path):
     """签名缺 cosign 属于工具异常（3）：证据没坏，是流水线坏了。"""
     r = repo(tmp_path)

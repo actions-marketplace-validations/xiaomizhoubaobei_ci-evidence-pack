@@ -97,3 +97,28 @@ def test_git_dir_is_never_collected_even_if_named(tmp_path):
     stage.mkdir()
     with pytest.raises(UsageError, match="不可收范围"):
         Collector(repo, tmp_path / "out").collect([".git"], stage)
+
+
+def test_excluded_paths_are_recorded_not_silently_dropped(tmp_path):
+    """被排除规则挡下的路径必须进 inputs.json 的 skipped。
+
+    这个字段曾经恒为空：包里的 manifest 只说自己含有什么，从不说什么被挡了。
+    读包的人因此分不清「文件被排除规则挡住」和「文件压根没进过 --include 范围」，
+    而这两件事的责任方不同。
+    """
+    repo = _repo(tmp_path)
+    (repo / "src" / "node_modules").mkdir()
+    (repo / "src" / "node_modules" / "x.js").write_text("x")
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    result = Collector(repo, tmp_path / "out").collect(["src"], stage)
+    assert result.rel_paths == ["src/a.py"]
+    assert result.skipped == ["src/node_modules/x.js"]
+
+
+def test_skipped_is_empty_when_nothing_was_excluded(tmp_path):
+    repo = _repo(tmp_path)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    result = Collector(repo, tmp_path / "out").collect(["src"], stage)
+    assert result.skipped == []

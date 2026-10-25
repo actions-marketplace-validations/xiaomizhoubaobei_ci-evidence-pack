@@ -110,8 +110,10 @@ def _read_manifest(root: Path) -> dict[str, str]:
 
 
 def check_manifest(root: Path) -> int:
-    """逐条比对 sha256sum.txt，返回问题条数。
+    """逐条比对 sha256sum.txt，返回被校验的文件数。
 
+    发现任何不一致（未声明文件 / 文件缺失 / 哈希不符）一律抛
+    EvidenceInvalid，不做「部分通过」：证据包只有全绿与不成立两种结局。
     这只能证明包内自洽：清单本身也在包里，改包的人顺手就能改它。
     真正的信任根必须在包外，这里不做也不假装做那件事。
     """

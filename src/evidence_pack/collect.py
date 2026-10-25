@@ -36,6 +36,8 @@ class CollectResult:
     """一次收集的结果：收进来的相对路径，以及被跳过的路径。"""
 
     rel_paths: list[str]
+    # 被排除规则挡下的路径（相对仓库根）。只记「确实匹配到、但没进包」的，
+    # 不记「压根没被 --include 扫到」的 —— 后者是范围问题，不是排除问题。
     skipped: list[str]
 
 
@@ -164,6 +166,10 @@ class Collector:
                 # 显式 include 的祖先链上的名字（如 `--include dist`）不算排除命中；
                 # 但硬排除（.git / 输出目录）与更深层的匹配目录照样要挡。
                 if self._matches_at_or_below(src, target):
+                    # 被排除的路径必须记下来：manifest/inputs.json 里那个 "skipped"
+                    # 字段空着的时候，读包的人没法判断「少了的文件」是被排除规则
+                    # 挡下的，还是根本没进过收集范围。两者责任不同。
+                    skipped.append(src.relative_to(self.repo_root).as_posix())
                     continue
                 posix = rel_path.as_posix()
                 if posix in seen:
@@ -179,7 +185,7 @@ class Collector:
             raise UsageError(
                 "所有 --include 都被排除规则过滤掉了（只剩 .git / 输出目录），证据包会为空。"
             )
-        return CollectResult(rel_paths=sorted(collected), skipped=skipped)
+        return CollectResult(rel_paths=sorted(collected), skipped=sorted(set(skipped)))
 
     def _matches_at_or_below(self, path: Path, include_root: Path) -> bool:
         resolved = path.resolve()

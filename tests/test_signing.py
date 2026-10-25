@@ -125,6 +125,18 @@ def test_verify_without_identity_is_rejected_locally(signed, monkeypatch):
     assert called == [], "identity 缺失时不该真的去调 cosign"
 
 
+def test_verify_names_the_missing_half_of_identity(signed, monkeypatch):
+    """只缺 issuer 时要点名 issuer。
+
+    包内 binding.json 允许只填一半（pack 时两个参数各写各的，缺的落空串），
+    此时若仍然只说「必须同时提供两者」，读的人会以为自己一个都没给。
+    """
+    blob, bundle = signed
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    with pytest.raises(UsageError, match="缺少 --issuer"):
+        verify(blob, bundle, identity=IDENTITY)
+
+
 def test_verify_key_is_gone_from_the_interface():
     """验签那侧也只剩短期证书一种身份：入口上不该还有 verify_key。"""
     import inspect

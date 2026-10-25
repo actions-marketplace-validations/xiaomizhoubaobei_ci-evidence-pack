@@ -320,6 +320,8 @@ runs:
         # 必须跟着本次触发的 ref 走，写死 main 的示例在 tag 上必然判 2。
         INPUT_IDENTITY: ${{ inputs.identity || format('https://github.com/{0}/{1}@{2}', github.repository, github.workflow_ref, github.ref_name) }}
         INPUT_ISSUER: ${{ inputs.issuer }}
+        ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
+        ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
       run: bash "${{ github.action_path }}/scripts/action-pack.sh"
 
     - name: 登记包外锚点

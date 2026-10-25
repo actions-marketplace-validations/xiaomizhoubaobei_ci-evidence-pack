@@ -201,11 +201,58 @@ runs:
     # 这里曾经写成 `inputs.sign == 'true'`，于是调用方显式传 'yes' / '1'
     # 时 installer 不跑，而打包脚本照签不误 —— 一路走到内核才发现没有 cosign，
     # 判成 3。两个脚本的判据分叉时，症状出现在离原因最远的地方。
+    # 这里曾经把 installer 锁在 `@v4.1.2` 这种 tag 上：方向对，但 tag 可被移动，
+    # 而且 2025 年那次事故就是锁到了一个**不存在的 tag**（v3.1.3），
+    # 于是 `uses:` 整步解析失败 → cosign 不在 PATH → 内核判 3。三秒钟能看懂的错，
+    # 在现场只留下一句「找不到 cosign」，离原因隔了七八层。
+    # 所以：引用钉成 tag 之外，再补一道装完即断言，点名到底是谁没装上。
     - name: 安装 cosign
+      id: cosign
       if: inputs.sign != 'false'
       uses: sigstore/cosign-installer@v4.1.2
       with:
         cosign-release: 'v3.1.4'
+      # 记下安装器自己认的版本：下一步没找到 cosign 时，与这里的值对比，
+      # 就能一眼分开「installer 没装上」和「装上了但不在 PATH」。
+      continue-on-error: true
+
+    # installer 挂了也必须能走到这一步 —— 否则现场只有一行平台级「step failed」。
+    # 这一步只做一件事：把真话写进日志和注解。
+    - name: 自检 cosign 是否可用
+      if: inputs.sign != 'false'
+      shell: bash
+      env:
+        COSIGN_VERSION: ${{ steps.cosign.outputs.cosign-version }}
+        COSIGN_INSTALL_OUTCOME: ${{ steps.cosign.outcome }}
+      run: |
+        set -uo pipefail
+        if command -v cosign >/dev/null 2>&1; then
+          echo "cosign 已就位：$(cosign version 2>&1 | sed -n 's/^GitVersion: *//p')"
+          exit 0
+        fi
+        # 到这儿就是「要签名，但机器上没有 cosign」。按退出码契约这是工具异常（3）。
+        # 内核稍后也会判 3，但那时只剩一句「cosign 缺失」；原因要说在这里。
+        echo "::error::签名已开启（sign != 'false'）但 cosign 不可用：安装步骤结果=${COSIGN_INSTALL_OUTCOME:-未知}，声明版本=${COSIGN_VERSION:-未取到}。详见上方「安装 cosign」的解析/下载日志"
+        exit 3
+
+    # OIDC 权限自检：签名的唯一信任根是 job 的 id-token: write，而 Action
+    # 没法替调用方开权限 —— 只能在自己被跑起来之后，把「开没开」说出来。
+    #
+    # 这里只看「签发端点在不在」，不看某个变量有没有值：真正换 token 在
+    # scripts/action-pack.sh 里做，那一步失败会判 3，并点名 job 需要 id-token: write。
+    # 本步骤只给 warning、不拦流程 —— 自托管 runner 与 sign: 'false' 都不该被它卡住。
+    - name: 自检 OIDC 签发方
+      if: inputs.sign != 'false'
+      shell: bash
+      env:
+        OIDC_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
+      run: |
+        set -uo pipefail
+        if [ -n "${OIDC_URL:-}" ]; then
+          echo "OIDC 签发方就绪，签名链路可用（audience=sigstore）"
+          exit 0
+        fi
+        echo "::warning::拿不到 OIDC 签发方（ACTIONS_ID_TOKEN_REQUEST_URL 为空）：job 上大概率没写 permissions.id-token: write，或跑在无签发方的自托管 runner 上。签名会以退出码 3 失败 —— 要么补上 id-token: write（job 级会覆盖顶层），要么显式 sign: 'false' 并自备包外 sha256 锚点"
 
     # 为什么要在 Action 里替用户装扫描器：`sbom: auto` 认出一个 Python 项目后，
     # 若机器上既没有 cyclonedx-py 又只有 pyproject.toml（现代 Python 项目的

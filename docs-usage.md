@@ -22,7 +22,8 @@ permissions:
 
 steps:
   - uses: actions/checkout@v4
-  - uses: XMZZUZHI/Github/ci-evidence-pack@main
+  # 钉到 SHA：浮动 @main 会让「跑的是哪一版」说不清
+  - uses: XMZZUZHI/Github/ci-evidence-pack@6d8ae66b768b8a77fb691fcb88729c8fc13dd912
     id: evidence
     with:
       include: |

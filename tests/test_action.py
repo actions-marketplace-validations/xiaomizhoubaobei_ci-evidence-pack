@@ -8,6 +8,7 @@
 import http.server
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -250,6 +251,56 @@ def test_verify_step_can_still_fail_the_job():
     # 用 JSON 里的判定整体换掉 process 退出码，再由 run 脚本自己决定成败。
     assert "--exit-code" in (SCRIPTS / "action-verify.sh").read_text(encoding="utf-8")
     assert 'exit "$code"' in verify["run"]
+
+
+def _step_by_name(fragment: str) -> dict:
+    for step in _manifest()["runs"]["steps"]:
+        if fragment in str(step.get("name", "")):
+            return step
+    raise AssertionError(f"action.yml 里找不到步骤：{fragment}")
+
+
+def test_cosign_install_failure_is_caught_by_a_later_step():
+    """安装失败要有人接住，而不是让现场只剩一行平台级 step failed。
+
+    这条守的是本次修的 bug：安装步骤带 continue-on-error 却不带 id，
+    结论就没人读得到 —— 打包内核只剩一句退出码 3，
+    「谁没装上」变成一个要花一小时去猜的问题。
+    """
+    install = _step_by_name("安装 cosign")
+    assert install.get("id"), "安装步骤必须有 id，否则 outcome 无人可读"
+    assert install.get("continue-on-error") is True
+    # 判据必须与 action-pack.sh 一致：小写 'false' 才算不签。
+    assert install["if"] == "inputs.sign != 'false'"
+
+    check = _step_by_name("自检 cosign")
+    assert check.get("shell") == "bash"
+    # installer 失败会让依赖它的步骤按 success() 被跳过 —— 那正是最需要自检的一刻，
+    # 所以判据必须显式带上 always()。
+    assert "always()" in str(check.get("if", "")), "自检步骤要带 always()，否则安装失败时它也被跳过"
+    # 读得到安装结论：没有 id 就写不出这个引用。
+    assert any(
+        f"steps.{install['id']}." in v for v in (check.get("env") or {}).values()
+    ), "自检步骤必须引用安装步骤的 outcome / outputs"
+    # 缺 cosign 是工具异常（3），不是证据无效（2）。
+    assert "exit 3" in check["run"]
+
+
+def test_oidc_probe_warns_but_never_fails_the_job():
+    """自托管 / sign: 'false' 不该被拦：只警告，不 exit 非零。"""
+    probe = _step_by_name("自检 OIDC")
+    assert "ACTIONS_ID_TOKEN_REQUEST_URL" in probe["run"]
+    assert "::warning" in probe["run"]
+    assert "::error" not in probe["run"]
+    assert not re.search(r"^\s*exit\s+[1-9]", probe["run"], re.M)
+
+
+def test_examples_pin_action_to_a_full_sha():
+    """浮动引用会让「修没修好」永远说不清：一律钉 40 位 SHA。"""
+    for path in EXAMPLES + [ROOT / "README.md", ROOT / "docs-usage.md"]:
+        text = path.read_text(encoding="utf-8")
+        for use in re.findall(r"ci-evidence-pack@(\S+)", text):
+            assert re.fullmatch(r"[0-9a-f]{40}", use), f"{path.name} 用了浮动引用：@{use}"
 
 
 def test_every_output_has_description():

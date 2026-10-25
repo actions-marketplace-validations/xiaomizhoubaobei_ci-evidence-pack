@@ -219,7 +219,9 @@ runs:
     # installer 挂了也必须能走到这一步 —— 否则现场只有一行平台级「step failed」。
     # 这一步只做一件事：把真话写进日志和注解。
     - name: 自检 cosign 是否可用
-      if: inputs.sign != 'false'
+      # always()：installer 失败会让依赖它的步骤按 success() 跳过，
+      # 而那正是最需要这步站出来点名的一刻。
+      if: always() && inputs.sign != 'false'
       shell: bash
       env:
         COSIGN_VERSION: ${{ steps.cosign.outputs.cosign-version }}

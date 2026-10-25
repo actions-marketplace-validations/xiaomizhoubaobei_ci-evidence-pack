@@ -43,7 +43,7 @@ permissions:
 
 steps:
   - uses: actions/checkout@v4
-  - uses: XMZZUZHI/Github/ci-evidence-pack@main
+  - uses: XMZZUZHI/Github/ci-evidence-pack@6d8ae66b768b8a77fb691fcb88729c8fc13dd912
     id: evidence
     with:
       include: |

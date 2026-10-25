@@ -10,7 +10,9 @@ requires-python = ">=3.10"
 dependencies = ["typer>=0.12,<1.0"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<9"]
+# action.yml 的断言要真解析 YAML：tests/test_action.py 直接 import yaml。
+# 缺它时 pytest 在收集阶段就退出 2 —— 看起来像「测试红了」，其实是环境少装了一个包。
+dev = ["pytest>=8,<9", "PyYAML>=6,<7"]
 # Python 3.10 没有标准库 tomllib；要从 pyproject.toml 兜底出 SBOM 就得靠它。
 # 3.11+ 不需要，所以是可选的。
 toml = ["tomli>=2,<3; python_version < '3.11'"]

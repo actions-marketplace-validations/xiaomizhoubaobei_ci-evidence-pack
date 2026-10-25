@@ -1,0 +1,111 @@
+# 发版即取证：打 tag → 本仓库自测 → 用本仓库的 Action 生成并签名证据包 → 挂到 Release。
+#
+# 这份流水线还有一个身份要求：GitHub Marketplace 只在「由 Release 触发的 workflow」
+# 发布时才会把 action.yml 上架。所以本文件既是指令也是目录（listing）开关 ——
+# 删掉它，Action 就从 Marketplace 消失。
+#
+# 这里用的是 `uses: ./`：Marketplace 要求资格 workflow 引用本仓库的 Action，
+# 所以本仓库给自己取证时只能走本地路径。外部调用方请钉 SHA（见 examples/）。
+# 证据包的信任根仍然只有 OIDC 短期证书这一条路。
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（workflow_dispatch 时必填，须已存在）'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # 发 Release 需要
+      id-token: write   # 签名的信任根：没有它就拿不到短期证书
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 全历史：SOURCE_DATE_EPOCH 才能稳定落到 commit 时间
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # 发之前先证明这棵树自己是好的：测试红了就别发。
+      - name: 自测
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pytest -q
+
+      # 用本仓库的 Action 给这棵树打包并签名 —— 顺带把 Action 跑通一次。
+      - name: 生成证据包并自检
+        id: evidence
+        uses: ./
+        with:
+          include: |
+            src/
+            scripts/
+            examples/
+            action.yml
+            pyproject.toml
+            README.md
+            docs-usage.md
+            AGENTS.md
+            LICENSE
+          sbom: auto
+          anchor-file: _evidence/anchor.txt
+          # 签名是默认动作，不给 sign 就是签：OIDC 换短期证书，没有别的分支。
+          # identity 留空 = 按本次触发的 ref 自动生成（tag 上就是 @refs/tags/v0.0.1）。
+          expect-repo: ${{ github.repository }}
+
+      - name: 挂到 Release 并把锚点写进正文
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          BUNDLE: ${{ steps.evidence.outputs.bundle-path }}
+          SIGNATURE: ${{ steps.evidence.outputs.signature-bundle }}
+          SHA256: ${{ steps.evidence.outputs.bundle-sha256 }}
+          SIGN_MODE: ${{ steps.evidence.outputs.signature-mode }}
+          VERIFY_CODE: ${{ steps.evidence.outputs.verify-exit-code }}
+        run: |
+          set -euo pipefail
+          # 先看自检结论：2 是「有人动过手脚」，3 是「流水线坏了」——
+          # 两种都不该发出 Release，但退出码要留痕。
+          if [ "${VERIFY_CODE:-3}" != "0" ]; then
+            echo "::error title=evidence-pack 自检未通过（退出码 ${VERIFY_CODE:-空}）::拒绝发布一份自己都不信的包"
+            exit 1
+          fi
+
+          # 同一 tag 重跑不覆盖既有 Release 的正文：正文里的锚点一旦被改写，
+          # 之前所有下游核对都会对不上。
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "::warning::Release ${GITHUB_REF_NAME} 已存在，跳过发布（提升版本号再发）"
+            exit 0
+          fi
+
+          gh release create "${GITHUB_REF_NAME}" --generate-notes \
+            "${BUNDLE}" ${SIGNATURE:+"${SIGNATURE}"}
+
+          gh release view "${GITHUB_REF_NAME}" --json body -q .body > body.md
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "### 证据包锚点"
+            echo ""
+            echo "- sha256: \`${SHA256}\`"
+            echo "- 签名: ${SIGN_MODE:-未签名（以 sha256 为锚点）}"
+            echo ""
+            echo '```bash'
+            echo "evidence-pack verify evidence-*.tar.gz --expect-sha256 ${SHA256}"
+            echo '```'
+          } >> body.md
+          gh release edit "${GITHUB_REF_NAME}" --notes-file body.md

@@ -247,11 +247,9 @@ runs:
       id: oidc
       if: inputs.sign != 'false'
       shell: bash
-      env:
-        OIDC_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
       run: |
         set -uo pipefail
-        if [ -n "${OIDC_URL:-}" ]; then
+        if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
           echo "OIDC 签发方就绪，签名链路可用（audience=sigstore）"
           exit 0
         fi

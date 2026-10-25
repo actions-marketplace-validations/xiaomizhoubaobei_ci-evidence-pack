@@ -316,9 +316,9 @@ runs:
         INPUT_BUNDLE_NAME: ${{ inputs.bundle-name }}
         INPUT_SIGN: ${{ inputs.sign }}
         INPUT_ARTIFACT_NAME: ${{ inputs.artifact-name }}
-        # identity 留空时按 realm/workflow_ref 现拼：identity 里的 @refs/...
-        # 必须跟着本次触发的 ref 走，写死 main 的示例在 tag 上必然判 2。
-        INPUT_IDENTITY: ${{ inputs.identity || format('https://github.com/{0}/{1}@{2}', github.repository, github.workflow_ref, github.ref_name) }}
+        # identity 留空时按 realm/workflow_ref 现拼：github.workflow_ref 格式为
+        # owner/repo/.github/workflows/xxx.yml@refs/...，直接拼上 host 即可。
+        INPUT_IDENTITY: ${{ inputs.identity || (github.workflow_ref != '' && format('https://github.com/{0}', github.workflow_ref) || '') }}
         INPUT_ISSUER: ${{ inputs.issuer }}
         ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
         ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
@@ -345,7 +345,7 @@ runs:
         # 未签名时这个值为空字符串，脚本据此跳过签名校验（而不是拿空路径去调 cosign）。
         INPUT_SIGNATURE_BUNDLE: ${{ steps.pack.outputs.signature-bundle }}
         # 与打包步骤同源：验签要用的期望身份就是打包时写进 binding.json 的那个。
-        INPUT_IDENTITY: ${{ inputs.identity || format('https://github.com/{0}/{1}@{2}', github.repository, github.workflow_ref, github.ref_name) }}
+        INPUT_IDENTITY: ${{ inputs.identity || (github.workflow_ref != '' && format('https://github.com/{0}', github.workflow_ref) || '') }}
         INPUT_ISSUER: ${{ inputs.issuer }}
         # 调用方没给 expect-sha256 时，这里回送的是**本次 job 刚算出的**摘要。
         # 那不是包外锚点，是「自己给自己发证」：它只能证明产物在步骤之间没被动过。

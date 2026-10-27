@@ -24,9 +24,9 @@
       pyproject.toml
 ```
 
-要验收据包的第三方也不必装任何东西：检出本仓库，跑 `scripts/action-verify.sh`
+要验收据包的第三方也不必装任何依赖：环境需 Python 3.13+，检出本仓库跑 `scripts/action-verify.sh`
 （见「只校验、不打包」）。别的 CI 环境（CNB / GitLab）可以借用同一个内核
-（`python3 -m evidence_pack.action`，输入走 `INPUT_*` 环境变量，接法见
+（`python3 -m evidence_pack.action`，环境需 Python 3.13+，输入走 `INPUT_*` 环境变量，接法见
 [`docs-usage.md`](docs-usage.md)）；但仓库本身不再养一层命令行外壳 ——
 参数解析、双输出模式在这里没有第二个使用者，只会多一份要跟着内核改、
 却没人跑的外壳。

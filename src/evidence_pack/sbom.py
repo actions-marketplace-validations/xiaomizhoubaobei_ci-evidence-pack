@@ -68,21 +68,15 @@ def _pyproject_requirements(repo_root: Path) -> list[str] | None:
     **没有**从 pyproject.toml 读依赖的子命令。而 pyproject.toml 恰恰是现代
     Python 项目的常态 —— 不补这条，`sbom: auto` 对这些项目必然判 3。
 
-    读不到（没有 tomllib、TOML 坏了、没写 dependencies）一律返回 None，
+    读不到（TOML 坏了、没写 dependencies）一律返回 None，
     让上层维持原来的「要而不得就 3」的判定，绝不静默出空 SBOM。
     """
     pyproject = repo_root / "pyproject.toml"
     if not pyproject.is_file():
         return None
-    # Python 3.11+ 有标准库 tomllib；3.10 需要 tomli。两者都没有就只能放弃，
-    # 让上层维持「要而不得则 3」，绝不假装扫过一遍。
-    try:
-        import tomllib
-    except ModuleNotFoundError:
-        try:
-            import tomli as tomllib  # type: ignore[no-redef]
-        except ModuleNotFoundError:
-            return None
+    # tomllib 是 3.11+ 标准库，本项目最低 3.13，不必再兜 tomli。
+    import tomllib
+
     try:
         data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     except (OSError, ValueError):

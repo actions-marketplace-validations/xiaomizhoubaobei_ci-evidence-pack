@@ -48,7 +48,7 @@
 
 按顺序，全部由 `action.yml` 的 composite steps 完成：
 
-1. 检查 `python3 >= 3.10`（内核纯标准库，这一步不装任何包）
+1. 检查 `python3 >= 3.13`（内核纯标准库，这一步不装任何包）
 2. `sign != 'false'` 时装 cosign，并拿 OIDC 换短期证书（缺签发方直接判 3）
 3. 打包 → 证据包 + `.sigstore.json`
 4. `anchor-file` 有值时把 sha256 追加登记（包外台账）

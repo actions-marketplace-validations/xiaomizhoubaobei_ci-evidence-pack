@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "evidence-pack"
 version = "0.0.1"
 description = "GitHub Action: deterministic, verifiable CI evidence bundles"
-requires-python = ">=3.10"
+requires-python = ">=3.13"
 # 纯标准库。本包只被 Action 的 shell 步骤以 `python3 -m evidence_pack.action`
 # 调起来，没有 console_scripts，也就没有理由为参数解析拉一个第三方依赖。
 dependencies = []
@@ -15,9 +15,8 @@ dependencies = []
 # action.yml 的断言要真解析 YAML：tests/test_action.py 直接 import yaml。
 # 缺它时 pytest 在收集阶段就退出 2 —— 看起来像「测试红了」，其实是环境少装了一个包。
 dev = ["pytest>=8,<9", "PyYAML>=6,<7"]
-# Python 3.10 没有标准库 tomllib；要从 pyproject.toml 兜底出 SBOM 就得靠它。
-# 3.11+ 不需要，所以是可选的。
-toml = ["tomli>=2,<3; python_version < '3.11'"]
+# 没有 toml 这个 extra 了：最低版本 3.13 自带标准库 tomllib，
+# 从 pyproject.toml 兜底 SBOM 不再需要 tomli。
 
 [tool.setuptools]
 package-dir = {"" = "src"}

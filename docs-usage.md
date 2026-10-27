@@ -43,7 +43,7 @@ steps:
 
 它做的事，按顺序：
 
-1. 检查 `python3 >= 3.10`（不往你的环境里装包，只借 `PYTHONPATH`；内核纯标准库）
+1. 检查 `python3 >= 3.13`（不往你的环境里装包，只借 `PYTHONPATH`；内核纯标准库）
 2. `sign != 'false'` 时装 cosign，并拿 OIDC 换短期证书
 3. `pack` → 包与 `.sigstore.json`
 4. `anchor-file` 有值时把 sha256 追加登记（包外台账）

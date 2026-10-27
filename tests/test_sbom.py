@@ -73,12 +73,6 @@ def test_fallback_output_is_byte_stable(tmp_path, monkeypatch):
 # `sbom: auto` 对它们必然判 3 —— 开箱即用就断在这儿。
 # ---------------------------------------------------------------------------
 
-pytest_tomli = pytest.mark.skipif(
-    __import__("importlib").util.find_spec("tomli") is None
-    and __import__("sys").version_info < (3, 11),
-    reason="需要 tomllib(3.11+) 或 tomli",
-)
-
 
 def _pyproject_repo(tmp_path: Path, body: str) -> Path:
     repo = tmp_path / "proj"
@@ -87,7 +81,6 @@ def _pyproject_repo(tmp_path: Path, body: str) -> Path:
     return repo
 
 
-@pytest_tomli
 def test_pyproject_dependencies_are_used_when_scanner_missing(tmp_path, monkeypatch):
     """只有 pyproject.toml 也要能出 SBOM，而不是判 3。"""
     monkeypatch.setattr(sbom.shutil, "which", lambda _name: None)
@@ -107,7 +100,6 @@ dependencies = ["typer>=0.12", "httpx==0.27.0"]
     assert data["metadata"]["component"]["name"] == "pyproject.toml"
 
 
-@pytest_tomli
 def test_pyproject_optional_dependencies_are_included(tmp_path, monkeypatch):
     monkeypatch.setattr(sbom.shutil, "which", lambda _name: None)
     repo = _pyproject_repo(
@@ -128,7 +120,6 @@ dev = ["pytest>=8"]
     assert names == ["pytest", "typer"]
 
 
-@pytest_tomli
 def test_requirements_wins_over_pyproject(tmp_path, monkeypatch):
     """两者都在时以 requirements.txt 为准：它更贴近实际安装的清单。"""
     monkeypatch.setattr(sbom.shutil, "which", lambda _name: None)
@@ -141,7 +132,6 @@ def test_requirements_wins_over_pyproject(tmp_path, monkeypatch):
     assert data["metadata"]["component"]["name"] == "requirements.txt"
 
 
-@pytest_tomli
 def test_pyproject_without_dependencies_still_exit_3(tmp_path, monkeypatch):
     """读得到 pyproject 但没有依赖表 —— 仍然是「要而不得」，不许出空 SBOM。"""
     monkeypatch.setattr(sbom.shutil, "which", lambda _name: None)

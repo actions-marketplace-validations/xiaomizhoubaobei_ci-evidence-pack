@@ -9,23 +9,11 @@ set -euo pipefail
 ACTION_PATH="${ACTION_PATH:?缺少 ACTION_PATH}"
 REPO="${REPO_ROOT:-.}"
 
-# ---------------------------------------------------------------------------
-# 输入归一化：multiline 输入 → 参数数组。
-# 空行与纯注释行忽略，行首行尾空白都裁掉：从 YAML 复制粘贴时缩进最容易带进来
-# （多行 `|` 块会被整块缩进），而 `--include "  dist/"` 在内核眼里就是个不存在的路径。
-# ---------------------------------------------------------------------------
-mapfile -t INCLUDES < <(
-  printf '%s\n' "${INPUT_INCLUDE:-}" \
-    | tr -d '\r' \
-    | sed -e 's/[[:space:]]*$//' \
-    | sed -e 's/^[[:space:]]*//' \
-    | grep -v -e '^$' -e '^#' || true
-)
-if [ "${#INCLUDES[@]}" -eq 0 ]; then
-  # 这条分支最常见的原因是调用方**根本没写** include：它是必填输入，
-  # 漏写时 inputs.include 渲染成空串，Action 不会替他兜底选目录。
-  # 所以文案要点名「必填输入」和该填什么，而不是只说「为空」——
-  # 否则现场只会看到一句「证据包里没有内容」，看不出是自己少写了一行。
+# include 是必填输入：漏写时 inputs.include 渲染成空串，Action 不会替调用方
+# 兜底选目录。所以先在这里点名「必填输入」和该填什么 —— 否则现场只会看到
+# 内核那句「include 为空」，看不出是自己少写了一行。多行输入的归一化
+# （裁空白、忽略空行与 # 注释）在内核里做，shell 只管把原文传下去。
+if [ -z "$(printf '%s' "${INPUT_INCLUDE:-}" | tr -d '[:space:]#')" ]; then
   echo "::error::include 为空：它是必填输入，请在 uses: 的 with: 下显式列出要收进证据包的文件或目录（例如 include: | 换行 dist/ 换行 pyproject.toml）。漏写 include 已如实判为用法错误（退出码 1），证据未生成"
   exit 1
 fi
@@ -40,51 +28,28 @@ case "$OUT_DIR" in
   *) OUT_DIR="$(cd "$REPO" && pwd)/$OUT_DIR" ;;
 esac
 
-ARGS=(
-  pack
-  --repo "$REPO"
-  --out "$OUT_DIR"
-  --sbom "${INPUT_SBOM:-auto}"
-  --bundle-name "${INPUT_BUNDLE_NAME:-evidence-${SHORT_SHA}.tar.gz}"
-)
+# 参数怎么来的：全部经 INPUT_* 环境变量进内核（python3 -m evidence_pack.action pack）。
+# 这里只落一个必填的 bundle 名 —— 它是 shell 侧才知道的信息（短 sha），
+# 其余默认值（sbom / out-dir）由内核自己兜。
+export INPUT_BUNDLE_NAME="${INPUT_BUNDLE_NAME:-evidence-${SHORT_SHA}.tar.gz}"
+export INPUT_OUT_DIR="$OUT_DIR"
 
-for inc in "${INCLUDES[@]}"; do
-  ARGS+=(--include "$inc")
-done
-
-mapfile -t EXCLUDES < <(
-  printf '%s\n' "${INPUT_EXCLUDE:-}" \
-    | tr -d '\r' \
-    | sed -e 's/[[:space:]]*$//' \
-    | sed -e 's/^[[:space:]]*//' \
-    | grep -v -e '^$' -e '^#' || true
-)
-for exc in "${EXCLUDES[@]}"; do
-  ARGS+=(--exclude "$exc")
-done
-
-# 签名是默认动作：内核默认就签，这里只负责把「不签」这件事显式传下去。
-# 只有 sign: false 才会走到 --no-sign —— 那时信任根必须来自包外锚点，
-# 否则下游 verify 会如实判 2（包内自洽不算证据）。
-# 签名只有一条路：OIDC 换短期证书。没有长期私钥的入口，也就没有「有私钥就用私钥、
-# 没有才想办法」这种隐式 fallback —— 那种分支最后总会在某个 job 上悄悄降级。
-# 判据只有一处：小写 'false' 才是关。这个字面量与内核的 signing.is_sign_off
-# 是同一个约定 —— action.yml 里装 cosign 的 `if:` 也用同一套判据。
-if [ "${INPUT_SIGN:-true}" = "false" ]; then
-  ARGS+=(--no-sign)
-else
-  # 靠 runner 派发的 OIDC token，命令行给不了也没法伪造。
-  # 判据是「有没有签发方」而不是「token 字面量在不在」：GitHub 托管 runner 上
-  # 就绪的是 ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN 这对凭据，token 要拿它去换。
-  if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] && [ -z "${SIGSTORE_ID_TOKEN:-}" ]; then
-    echo "::error::签名的信任根只有 OIDC：job 需要 id-token: write，且只在 GitHub 托管 runner 上有 OIDC 签发方。自托管 / 本地没有签发方，请显式 sign: 'false'（此时必须有包外锚点）"
-    exit 3
-  fi
+# 签名是默认动作，只有小写 'false' 才是关 —— 判据与内核的 is_sign_off 一致，
+# action.yml 里装 cosign 的 `if:` 也用同一个字面量。关掉时信任根交给包外锚点，
+# 下游 verify 会按同一判断处理（包内自洽不算证据，该判 2 就判 2）。
+#
+# 要签就得先有签发方：靠 runner 派发的 OIDC token，命令行给不了也没法伪造。
+# 判据是「有没有签发方」而不是「token 字面量在不在」—— GitHub 托管 runner 上
+# 就绪的是 ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN 这对凭据，token 要拿它去换。
+if [ "${INPUT_SIGN:-true}" != "false" ] \
+   && [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] \
+   && [ -z "${SIGSTORE_ID_TOKEN:-}" ]; then
+  echo "::error::签名的信任根只有 OIDC：job 需要 id-token: write，且只在 GitHub 托管 runner 上有 OIDC 签发方。自托管 / 本地没有签发方，请显式 sign: 'false'（此时必须有包外锚点）"
+  exit 3
 fi
 
-# 期望身份写进包内 metadata/binding.json：验签方据此核对，别处没有第二处记录。
-[ -n "${INPUT_IDENTITY:-}" ] && ARGS+=(--identity "$INPUT_IDENTITY")
-[ -n "${INPUT_ISSUER:-}" ]   && ARGS+=(--issuer "$INPUT_ISSUER")
+# 期望身份（INPUT_IDENTITY / INPUT_ISSUER）由 action.yml 直接注入环境，
+# 内核把它写进包内 metadata/binding.json：验签方据此核对，别处没有第二处记录。
 
 export PYTHONPATH="$ACTION_PATH/src${PYTHONPATH:+:$PYTHONPATH}"
 # 证据包必须说得出「何时产生」，且同一个 commit 两次跑出来要一样。
@@ -126,11 +91,11 @@ if [ -z "${SIGSTORE_ID_TOKEN:-}" ] \
     exit 3
   fi
 fi
-[ -n "${SIGSTORE_ID_TOKEN:-}" ] && ARGS+=(--oidc-token-env SIGSTORE_ID_TOKEN)
+# token 就在这个环境变量里，内核只从它读（不像 argv 那样会进作业日志）。
 
 # set -o pipefail 让 tee 不会把 python 的退出码吃掉，这里原样交还 0/1/2/3：
 # 「证据无效」和「工具坏了」在 Action 里也得是两个不同的结论。
-python3 -m evidence_pack.cli "${ARGS[@]}" --json | tee pack-result.json
+python3 -m evidence_pack.action pack | tee pack-result.json
 CODE="${PIPESTATUS[0]}"
 if [ "$CODE" -ne 0 ]; then
   echo "::error::证据包打包失败（退出码 ${CODE}），结论见上面的 JSON"
@@ -178,7 +143,7 @@ PY
 cat >> "${GITHUB_STEP_SUMMARY:-/dev/null}" <<'MD'
 
 > 想让它成为**证据**而不只是一份产物：把上面的 sha256 登记到包外的位置
-> （制品库 / 审计库 / 工单），验的时候再回送 `--expect-sha256`。
+> （制品库 / 审计库 / 工单），验的时候再从那里取出来回送 expect-sha256。
 > 包里的 manifest 只能证明包内自洽，不能证明这份包来自你以为的那个人。
 
 > 自检（verify）默认回送的摘要就是**上一步刚算出来的**那个。签名一默认开，

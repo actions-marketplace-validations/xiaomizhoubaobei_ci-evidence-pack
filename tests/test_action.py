@@ -268,8 +268,11 @@ def test_verify_step_can_still_fail_the_job():
     }
     verify = steps["verify"]
     assert verify.get("continue-on-error") is True
-    # 用 JSON 里的判定整体换掉 process 退出码，再由 run 脚本自己决定成败。
-    assert "--exit-code" in (SCRIPTS / "action-verify.sh").read_text(encoding="utf-8")
+    # 内核不给 process 设退出码（恒 0），判定只从 JSON 的 exit_code 取，
+    # 再由 Action 的 run 脚本自己决定成败 —— 中间少一层解释器，就少一处会分叉的真相。
+    script = (SCRIPTS / "action-verify.sh").read_text(encoding="utf-8")
+    assert "evidence_pack.action verify" in script
+    assert 'result["exit_code"]' in script
     assert 'exit "$code"' in verify["run"]
 
 
@@ -370,6 +373,9 @@ def _action_env(workspace: Path, **inputs: str) -> dict:
     # 给一个干净环境：不继承 INPUT_*，免得本机残留变量把结论带偏。
     base = {
         "PATH": os.environ["PATH"],
+        # 内核的 src 由 README / 测试都靠 PYTHONPATH 提供（Action 里是 ACTION_PATH/src），
+        # 这里显式给：脚本本身不猜包在哪，装没装过都该跑得起来。
+        "PYTHONPATH": str(ROOT / "src"),
         "HOME": os.environ.get("HOME", "/tmp"),
         "ACTION_PATH": str(ROOT),
         "REPO_ROOT": str(workspace),
@@ -986,7 +992,9 @@ def test_cosign_installer_runs_for_every_value_that_means_sign():
 
     script = (SCRIPTS / "action-pack.sh").read_text(encoding="utf-8")
     # shell 层的判据：同样是「只有 'false' 才是关」，用 default 兜空串。
-    assert '[ "${INPUT_SIGN:-true}" = "false" ]' in script
+    # 写法是「!= 'false' 才要求签发方」—— 不等价于 `= 'false'` 的取反吗？等价，
+    # 但这样写不会在 if/else 里再嵌一层 if，判据只出现一次，也少一处缩进出错的机会。
+    assert '[ "${INPUT_SIGN:-true}" != "false" ]' in script
 
 
 def test_sign_off_literal_is_shared_by_action_and_kernel():
@@ -1112,8 +1120,9 @@ def test_release_body_lists_rekor_entries():
     run = _release_publish_step()["run"]
     assert "### 透明日志（Rekor）" in run
     assert "logIndex" in run
-    # 条目要从本仓库 CLI 读，不许在 YAML 里手搓 jq：字段一改名就静默变空。
-    assert "evidence_pack.cli rekor" in run
+    # 条目要从本仓库内核读，不许在 YAML 里手搓 jq：字段一改名就静默变空。
+    assert "evidence_pack.action rekor" in run
+    assert "INPUT_SIGNATURE_BUNDLE" in run
 
 
 def test_release_refuses_to_publish_unverified_evidence():

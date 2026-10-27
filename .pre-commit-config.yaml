@@ -51,8 +51,8 @@ repos:
   rev: v2.4.0
   hooks:
   - id: mypy
-    # 本工具的外部命令一律走 subprocess，不 import typer 之外的三方库；
-    # 缺类型存根的三方包（如 typer）按 ignore_missing_imports 放过。
+    # 内核纯标准库（外部命令走 subprocess），第三方依赖只在测试里出现；
+    # 缺类型存根的三方包按 ignore_missing_imports 放过。
     args: ['--ignore-missing-imports']
 
 - repo: https://github.com/pycqa/pydocstyle

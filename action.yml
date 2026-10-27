@@ -180,20 +180,16 @@ runs:
       run: |
         set -euo pipefail
         command -v python3 >/dev/null 2>&1 || {
-          echo "::error::找不到 python3。ubuntu/macos 的 runner 自带；自托管 runner 请先装 Python 3.10+"
+          echo "::error::找不到 python3。ubuntu/macos 的 runner 自带；自托管 runner 请先装 Python 3.13+"
           exit 1
         }
-        python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' || {
-          echo "::error::evidence-pack 需要 Python 3.10+，当前是 $(python3 -V 2>&1)"
+        python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 13) else 1)' || {
+          echo "::error::evidence-pack 需要 Python 3.13+，当前是 $(python3 -V 2>&1)"
           exit 1
         }
-        # CLI 核心依赖 typer：Action 开箱即用，避免调用方环境未安装导致 ModuleNotFoundError
-        if ! python3 -c 'import typer' >/dev/null 2>&1; then
-          python3 -m pip install --quiet 'typer>=0.12,<1.0' || {
-            echo "::error::typer 依赖安装失败，请检查网络或 runner pip 环境"
-            exit 3
-          }
-        fi
+        # 内核纯标准库（没有 CLI 框架、没有 console_scripts），这一步不装任何包：
+        # 往调用方的解释器环境里装东西是有代价的（版本冲突、污染缓存、拉长时长）。
+        # 3.13 自带标准库 tomllib，从 pyproject.toml 兜底 SBOM 也不需要额外装包。
 
     # 只在真要签名时装。判据必须与 scripts/action-pack.sh 逐字一致：
     # 小写 'false' 才算关，空串 / 'yes' / '1' / 'True' 一律按默认（签名）处理。
@@ -287,13 +283,7 @@ runs:
           exit 0
         }
         if [ "$want" = "python" ]; then
-          # 3.10 没有标准库 tomllib：从 pyproject.toml 兜底 SBOM 要用到 tomli。
-          # 3.11+ 自带，不必装。两个都试一把，装不上就让内核按 3 报出来。
-          if ! python3 -c 'import tomllib' >/dev/null 2>&1 \
-             && ! python3 -c 'import tomli' >/dev/null 2>&1; then
-            python3 -m pip install --quiet 'tomli>=2,<3' \
-              || echo "::warning::tomli 没装上：Python 3.10 从 pyproject.toml 兜底 SBOM 会失败"
-          fi
+          # tomllib 已是标准库（3.11+，本项目最低 3.13），不必再补 tomli。
           command -v cyclonedx-py >/dev/null 2>&1 && exit 0
           python3 -m pip install --quiet cyclonedx-bom \
             || install_failed "cyclonedx-bom"

@@ -5,8 +5,10 @@
 >
 > 本文件是仓库内唯一的 Agent 入口文档：第 1~7 章是通用协作规范，第 8 章是本项目技术上下文。
 >
-> 项目：`evidence-pack` — 把一次 CI 构建钉成可独立验证的证据包
-> （确定性打包 + 严格 manifest + cosign bundle 签名 + 退出码 0/2/3 分层）。
+> 项目：`evidence-pack` — **一个 GitHub Action**：把一次 CI 构建钉成可独立验证的
+> 证据包（确定性打包 + 严格 manifest + cosign bundle 签名 + 退出码 0/2/3 分层）。
+> 仓库不提供命令行程序，内核只经 `python3 -m evidence_pack.action pack|verify|rekor`
+> 被 Action 的 shell 步骤调起。
 
 ## 1. Git 提交规范
 
@@ -49,7 +51,7 @@ git log --format='%h %G? %s' "origin/main..HEAD" | tee /tmp/sig.txt
 
 ## 2. 编码规范
 
-- Python 3.10+，函数与关键变量必须有类型注解；禁止图省事滥用 `Any`。
+- Python 3.13+，函数与关键变量必须有类型注解；禁止图省事滥用 `Any`。
 - 命名遵循 PEP 8：函数/变量 `snake_case`，类 `PascalCase`，常量 `UPPER_SNAKE_CASE`。
 - **注释与文档用中文**，重点覆盖：确定性相关的排序/时间来源处理、退出码分流、签名与验签边界。
 - 错误处理只区分「用法错 / 证据无效 / 工具异常」三档，与退出码 1/2/3 一一对应，不要在中间层吞异常。
@@ -60,6 +62,9 @@ git log --format='%h %G? %s' "origin/main..HEAD" | tee /tmp/sig.txt
 - **局部精准修改**：禁止全量覆盖、禁止夹带无关改动；提交前用 `git diff` 复核。
 - **闭环验证**：改完必须跑 `python -m pytest -q`；涉及 `pack`/`verify` 行为的改动，还要手跑一次端到端。
 - **不直接推主分支**：所有改动走 PR，变更可审查、可追溯。
+- **入口只有一个**：Action 的 shell 步骤调 `python3 -m evidence_pack.action`，
+  输入走 `INPUT_*` 环境变量。不要再长出命令行外壳（参数解析、双输出模式）——
+  那是另一件产品，留在这里只会多一份没人跑、却要跟着内核改的代码。
 
 ## 4. CI/CD
 
@@ -91,12 +96,12 @@ git log --format='%h %G? %s' "origin/main..HEAD" | tee /tmp/sig.txt
 
 ```
 src/evidence_pack/
-├── cli.py        # Typer 入口：pack / verify，退出码分流
-├── collect.py    # 按 --include/--exclude 收集输入，保留仓库相对路径
+├── action.py     # Action 内核入口：读 INPUT_* 环境变量，输出结构化结论
+├── collect.py    # 按 include / exclude 收集输入，保留仓库相对路径
 ├── fsutil.py     # 排序、遍历、哈希等确定性工具
 ├── packer.py     # 组包：artifacts / metadata / sbom / manifest，产出 tar.gz
 ├── sbom.py       # CycloneDX 生成（auto 模式下拿不到即退出码 3）
-├── signing.py    # cosign key / keyless，只产 .sigstore.json
+├── signing.py    # cosign keyless 签名与验签，只产 .sigstore.json
 ├── verifier.py   # 解包校验 + 签名校验 + 包外锚点比对
 └── errors.py     # 异常类型 ↔ 退出码映射
 ```
@@ -106,7 +111,7 @@ src/evidence_pack/
 | 码 | 含义 | 触发点 |
 |---|---|---|
 | 0 | 证据通过 | 校验全绿，且有签名或包外锚点 |
-| 1 | 用法错误 | 参数非法，与证据真伪无关 |
+| 1 | 用法错误 | 输入非法（`include` 为空 / 越界、要签名却没 token 等），与证据真伪无关 |
 | 2 | 证据无效 | 哈希不符 / 签名 invalid / identity 不匹配 / 锚点不符 / 无信任根 |
 | 3 | 工具异常 | `cosign` 缺失、bundle 格式坏、SBOM 要而不得 |
 
@@ -126,7 +131,7 @@ manifest/sha256sum.txt      除自身外每个文件的 sha256
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q          # 签名相关用例在无 cosign 时自动跳过
+PYTHONPATH=src python -m pytest -q   # 签名相关用例在无 cosign 时自动跳过
 pre-commit run --all-files   # 提交前门禁，配置见 .pre-commit-config.yaml
 ```
 
@@ -135,6 +140,6 @@ pre-commit run --all-files   # 提交前门禁，配置见 .pre-commit-config.ya
 
 ### 8.5 已知取舍
 
-- **不做 fork**：只沿用上游思路（确定性打包、严格解包、双输出模式），签名层与 CLI 全重写。
+- **不做 fork**：只沿用上游思路（确定性打包、严格解包、双输出模式），签名层与内核全重写；入口收成一个 GitHub Action。
   上游产 `.sig` + `.crt` 两文件，cosign v3 已废弃；其 `verify` 只信退出码，假 cosign 能骗过它。
 - **包内自洽不算证据**：这是设计上的核心判断，不是 bug，不要「优化」成无锚点也返回 0。

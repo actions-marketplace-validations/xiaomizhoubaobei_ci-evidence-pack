@@ -28,9 +28,9 @@ repos:
   hooks:
   - id: black
     # 不绑 language_version：任一本机 Python 3.10+ 均可跑通。
-    # 目标版本取 py312 而非 3.10，只为不把 3.10 之后的语法判为错误；
+    # 目标版本取 py313，与本项目最低版本对齐；
     # 真正的最低版本约束由 pyproject 的 requires-python 负责。
-    args: ['--target-version', 'py312']
+    args: ['--target-version', 'py313']
 
 - repo: https://github.com/pycqa/flake8
   rev: 7.4.1
@@ -43,16 +43,15 @@ repos:
   rev: 9.0.2
   hooks:
   - id: isort
-    # 9.0.2 是 isort 首个 requires-python>=3.10 的稳定版，与本项目最低版本对齐；
-    # 10.0.0b1 要求 >=3.11，在 3.10 环境下装不上（实测直接报错）。
+    # 9.0.2 是当前稳定版，在 3.13 环境下可正常安装运行。
     args: ['--profile', 'black']
 
 - repo: https://github.com/pre-commit/mirrors-mypy
   rev: v2.4.0
   hooks:
   - id: mypy
-    # 本工具的外部命令一律走 subprocess，不 import typer 之外的三方库；
-    # 缺类型存根的三方包（如 typer）按 ignore_missing_imports 放过。
+    # 内核纯标准库（外部命令走 subprocess），第三方依赖只在测试里出现；
+    # 缺类型存根的三方包按 ignore_missing_imports 放过。
     args: ['--ignore-missing-imports']
 
 - repo: https://github.com/pycqa/pydocstyle

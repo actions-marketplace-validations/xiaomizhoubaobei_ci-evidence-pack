@@ -128,8 +128,10 @@ jobs:
             echo "- sha256: \`${SHA256}\`"
             echo "- 签名: ${SIGN_MODE:-未签名（以 sha256 为锚点）}"
             echo ""
-            echo '```bash'
-            echo "evidence-pack verify evidence-*.tar.gz --expect-sha256 ${SHA256}"
-            echo '```'
+            echo "下游核对：把证据包与签名 bundle 取回来，用本仓库的校验步骤验一遍"
+            echo "（把本仓库检出到 \`.evidence-pack\`，调 \`.evidence-pack/scripts/action-verify.sh\`，"
+            echo "接法见 README「只校验、不打包」）。"
+            echo ""
+            echo "包外锚点：\`${SHA256}\` —— 核对时从登记它的地方取出来回送，不要从包里读。"
           } >> body.md
           gh release edit "${GITHUB_REF_NAME}" --notes-file body.md

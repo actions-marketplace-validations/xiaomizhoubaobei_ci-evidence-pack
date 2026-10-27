@@ -34,7 +34,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.13'
 
       # 发之前先证明这棵树自己是好的：测试红了就别发。
       - name: 自测
@@ -87,7 +87,7 @@ jobs:
               print("- 本次未签名，因而没有透明日志条目；信任根只有正文里的 sha256 锚点。")
           elif not entries:
               print("- 签名 bundle 内**没有**透明日志条目：这条签名缺少可复核的公开落点，")
-              print("  不能单独构成证据。请检查 Rekor 连通性与 `--rekor-url`。")
+              print("  不能单独构成证据。请检查 Rekor 连通性与签名时的 rekor 地址。")
           else:
               for entry in entries:
                   index = entry.get("log_index") or "未记录"
@@ -130,22 +130,15 @@ jobs:
             "${BUNDLE}" ${SIGNATURE:+"${SIGNATURE}"}
 
           # 透明日志条目从签名 bundle 里读，不从日志文本里抠：logIndex / logId
-          # 只有 bundle 那一处是权威的。交给本仓库的 CLI 解析，免得在 YAML 里
+          # 只有 bundle 那一处是权威的。交给本仓库内核解析，免得在 YAML 里
           # 手搓 jq —— 字段一改名，表达式会静默变成空值，正文照样发得出去。
           #
           # 解析失败不拦发布：它只意味着「这条签名没有可复核的公开落点」。
           # 正文里如实写明，比让整条 Release 消失更接近事实。
           entries=0
           if [ -n "${SIGNATURE}" ] && [ -f "${SIGNATURE}" ]; then
-            # typer 由前面「自测」那步的 `pip install -e ".[dev]"` 带进来。不依赖它
-            # 也行，但别让现场只看到一句 ModuleNotFoundError —— 那是这条链路上
-            # 最容易被误读成「bundle 坏了」的一种报错。
-            if ! python3 -c 'import typer' >/dev/null 2>&1; then
-              python3 -m pip install --quiet 'typer>=0.12,<1.0' \
-                || echo "::warning::typer 装不上，透明日志条目将标注「未取到」"
-            fi
-            if PYTHONPATH="${GITHUB_WORKSPACE}/src" \
-                 python3 -m evidence_pack.cli rekor "${SIGNATURE}" --json > rekor.json; then
+            if PYTHONPATH="${GITHUB_WORKSPACE}/src" INPUT_SIGNATURE_BUNDLE="${SIGNATURE}" \
+                 python3 -m evidence_pack.action rekor > rekor.json; then
               entries="$(python3 -c 'import json;print(json.load(open("rekor.json"))["count"])')"
             else
               echo "::warning::解析透明日志条目失败，正文将标注「未取到」"
@@ -166,9 +159,11 @@ jobs:
             echo "- sha256: \`${SHA256}\`"
             echo "- 签名: ${SIGN_MODE:-未签名（以 sha256 为锚点）}"
             echo ""
-            echo '```bash'
-            echo "evidence-pack verify evidence-*.tar.gz --expect-sha256 ${SHA256}"
-            echo '```'
+            echo "下游核对：把证据包与签名 bundle 取回来，用本仓库的校验步骤验一遍"
+            echo "（把本仓库检出到 \`.evidence-pack\`，调 \`.evidence-pack/scripts/action-verify.sh\`，"
+            echo "接法见 README「只校验、不打包」）。"
+            echo ""
+            echo "包外锚点：\`${SHA256}\` —— 核对时从登记它的地方取出来回送，不要从包里读。"
             echo ""
             echo "### 透明日志（Rekor）"
             echo ""

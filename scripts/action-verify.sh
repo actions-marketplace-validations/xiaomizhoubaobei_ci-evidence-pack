@@ -5,7 +5,7 @@
 #   1. 本 job 刚打的包 —— 有签名验签名，没签名就得有包外锚点，否则如实判 2；
 #   2. 下游 job 拿到别处来的包 —— 用 expect-sha256 把包外锚点回送。
 #
-# 判定一律走 `verify --exit-code`：结论在 JSON 里，进程不吃退出码，
+# 判定由内核给出（process 恒 0，结论在 JSON 的 exit_code 里），
 # 这样后续的登记锚点、发评论、上传制品不会被 set -e 掐断；
 # 最后再把 0/1/2/3 原样交还给调用方。
 set -euo pipefail
@@ -17,18 +17,14 @@ if [ -z "$BUNDLE" ]; then
   exit 1
 fi
 
-ARGS=(verify "$BUNDLE" --exit-code --json)
-
-[ -n "${INPUT_SIGNATURE_BUNDLE:-}" ]  && ARGS+=(--signature-bundle "$INPUT_SIGNATURE_BUNDLE")
-# 验签只认短期证书里的身份：identity + issuer 给不出来就等于「接受任何人的签名」。
-[ -n "${INPUT_IDENTITY:-}" ]          && ARGS+=(--identity "$INPUT_IDENTITY")
-[ -n "${INPUT_ISSUER:-}" ]            && ARGS+=(--issuer "$INPUT_ISSUER")
-[ -n "${INPUT_EXPECT_SHA256:-}" ]     && ARGS+=(--expect-sha256 "$INPUT_EXPECT_SHA256")
-[ -n "${INPUT_EXPECT_REPO:-}" ]       && ARGS+=(--expect-repo "$INPUT_EXPECT_REPO")
-[ "${INPUT_IGNORE_TLOG:-false}" = "true" ] && ARGS+=(--insecure-ignore-tlog)
+# 参数走 INPUT_* 环境变量：验签只认短期证书里的身份，identity + issuer
+# 给不出来就等于「接受任何人的签名」，那条判定在内核里，这里只负责传导。
+export INPUT_BUNDLE="$BUNDLE"
 
 export PYTHONPATH="$ACTION_PATH/src${PYTHONPATH:+:$PYTHONPATH}"
-python3 -m evidence_pack.cli "${ARGS[@]}" | tee verify-result.json
+# 内核恒以 0 退出，判定在 JSON 的 exit_code 里 —— 后面还要登记锚点、发评论、
+# 上传制品，不能让 set -e 在这一步把整条流水线掐断。
+python3 -m evidence_pack.action verify | tee verify-result.json
 
 EXIT_FILE="$(mktemp)"
 trap 'rm -f "$EXIT_FILE"' EXIT

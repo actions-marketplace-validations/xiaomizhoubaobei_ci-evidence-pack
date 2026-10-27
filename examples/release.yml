@@ -91,15 +91,19 @@ jobs:
           MD
           # 条目从签名 bundle 里读，不从日志文本里抠 —— logIndex / logId 只有那一处是权威的。
           # 读不出来不拦发布：它只意味着「这条签名没有可复核的公开落点」，正文里如实写。
+          #
+          # 解析器就是本 Action 的内核（python3 -m evidence_pack.action rekor）：
+          # Action 在本 job 里已经把 src 塞进 PYTHONPATH，这里不必再装任何包。
           sig="${{ steps.evidence.outputs.signature-bundle }}"
-          if [ -n "$sig" ] && evidence-pack rekor "$sig" --json > rekor.json; then
+          if [ -n "$sig" ] && INPUT_SIGNATURE_BUNDLE="$sig" \
+               python3 -m evidence_pack.action rekor > rekor.json; then
             python3 - <<'PY' >> body.md
           import json
 
           entries = json.load(open("rekor.json", encoding="utf-8"))["entries"]
           if not entries:
               print("- 签名 bundle 内**没有**透明日志条目：这条签名缺少可复核的公开落点，")
-              print("  不能单独构成证据。请检查 Rekor 连通性与 `--rekor-url`。")
+              print("  不能单独构成证据。请检查 Rekor 连通性与签名时的 rekor 地址。")
           for e in entries:
               print(f"- logIndex `{e['log_index']}`，integratedTime `{e['integrated_time']}`")
               if e["log_id"]:

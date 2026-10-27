@@ -35,7 +35,9 @@ def run(*args, cwd=None, inputs=None, env=None):
         del full_env[key]
     full_env.pop("SIGSTORE_ID_TOKEN", None)
     full_env["PYTHONPATH"] = SRC
-    full_env.update({f"INPUT_{k.upper().replace('-', '_')}": v for k, v in (inputs or {}).items()})
+    full_env.update(
+        {f"INPUT_{k.upper().replace('-', '_')}": v for k, v in (inputs or {}).items()}
+    )
     full_env.update(env or {})
     proc = subprocess.run(
         [sys.executable, "-m", "evidence_pack.action", *args],
@@ -97,7 +99,12 @@ def test_pack_without_include_is_usage_error(tmp_path):
     proc = run(
         "pack",
         cwd=repo(tmp_path),
-        inputs={"out-dir": "dist", "sbom": "none", "sign": "false", "include": "  \n# 只有注释\n"},
+        inputs={
+            "out-dir": "dist",
+            "sbom": "none",
+            "sign": "false",
+            "include": "  \n# 只有注释\n",
+        },
     )
     assert proc.returncode == EXIT_USAGE
     assert "include" in payload(proc)["error"]
@@ -107,7 +114,12 @@ def test_pack_bad_include_is_usage_error(tmp_path):
     proc = run(
         "pack",
         cwd=repo(tmp_path),
-        inputs={"out-dir": "dist", "include": "../escape", "sbom": "none", "sign": "false"},
+        inputs={
+            "out-dir": "dist",
+            "include": "../escape",
+            "sbom": "none",
+            "sign": "false",
+        },
     )
     assert proc.returncode == EXIT_USAGE
 
@@ -157,7 +169,9 @@ def test_verify_exit_code_lives_in_json_not_in_process(tmp_path):
 
 def test_verify_with_anchor_passes(tmp_path):
     bundle = pack(repo(tmp_path))["bundle_path"]
-    result = payload(run("verify", inputs={"bundle": bundle, "expect-sha256": _sha(bundle)}))
+    result = payload(
+        run("verify", inputs={"bundle": bundle, "expect-sha256": _sha(bundle)})
+    )
     assert result["ok"] is True
     assert result["exit_code"] == EXIT_OK
     assert result["anchored"] is True

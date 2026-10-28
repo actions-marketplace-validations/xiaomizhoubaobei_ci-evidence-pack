@@ -352,6 +352,169 @@ cosign 默认就装，只有 `sign: 'false'` 才跳过。
 想要一条真能核对的锚点：用 `expect-sha256`，别指望 `expect-repo`
 在没有 remote 的检出里替你兜底。
 
+## 架构图
+
+先给全景，再拆两段。图里的每个箭头都能在源码里指到具体一行：
+
+- `action.yml` 的 composite steps 决定**顺序**与「什么时候装什么」；
+- `scripts/*.sh` 只做 shell 侧才能做的事（换 OIDC token、落 `GITHUB_OUTPUT`、退出码交还）；
+- `src/evidence_pack/` 是纯标准库内核，判定全在这里做，别处不复述。
+
+### 全景：一次调用的两条链路
+
+```mermaid
+flowchart TB
+    subgraph caller["调用方仓库（GitHub Actions job）"]
+        direction TB
+        checkout["actions/checkout<br/>构建产物 dist/ …"]
+        uses["uses: ci-evidence-pack<br/>include / sbom / sign / anchor-file"]
+        checkout --> uses
+    end
+
+    subgraph action["action.yml · composite steps"]
+        direction TB
+        py["① 检查 python3 &gt;= 3.13"]
+        cosign["② 安装 cosign + 自检"]
+        oidc["③ 自检 OIDC 签发方"]
+        scanner["④ 准备 SBOM 扫描器"]
+        packstep["⑤ action-pack.sh"]
+        anchorstep["⑥ action-anchor.sh<br/>（anchor-file 有值才跑）"]
+        verifystep["⑦ action-verify.sh<br/>（verify=true 时，默认跑）"]
+        upload["⑧ upload-artifact"]
+        py --> cosign --> oidc --> scanner --> packstep
+        packstep --> anchorstep --> verifystep --> upload
+    end
+
+    uses --> action
+
+    subgraph kernel["src/evidence_pack · 纯标准库内核"]
+        direction LR
+        act["action.py<br/>读 INPUT_*，只出 JSON"]
+        collect["collect.py<br/>include / exclude"]
+        packer["packer.py<br/>组包 + 确定性 tar"]
+        sbom["sbom.py<br/>CycloneDX"]
+        signing["signing.py<br/>cosign keyless"]
+        verifier["verifier.py<br/>解包 + 三重校验"]
+        errors["errors.py<br/>异常 ↔ 退出码"]
+        act --> collect --> packer
+        packer --> sbom
+        packer --> signing
+        act --> verifier
+        verifier --> signing
+        errors -.-> act
+    end
+
+    packstep -->|"pack"| act
+    verifystep -->|"verify"| act
+
+    subgraph out["产物（out-dir，默认 _evidence/）"]
+        direction TB
+        bundle["evidence-&lt;sha7&gt;.tar.gz"]
+        sig["evidence-&lt;sha7&gt;.tar.gz.sigstore.json"]
+        ledger["anchor.txt（包外台账，可选）"]
+        jsons["pack-result.json / verify-result.json<br/>GITHUB_OUTPUT / STEP_SUMMARY"]
+    end
+
+    packer --> bundle
+    signing --> sig
+    anchorstep --> ledger
+    act --> jsons
+    upload --> artifact(["GitHub Artifact"])
+
+    ext1["Fulcio（换短期证书）"]
+    ext2["Rekor（透明日志）"]
+    signing -.->|"SIGSTORE_ID_TOKEN"| ext1
+    signing -.->|"tlog 条目"| ext2
+```
+
+两条链路要分开读：**打**的那条从左往右长出产物，**验**的那条把包当对手给的东西重新拆一遍。
+同一次调用里两者都跑，但校验侧不会去信打包侧的内存结论 —— 它只认重新算出来的东西。
+
+### 打包：一份包是怎么长出来的
+
+```mermaid
+flowchart LR
+    A["INPUT_INCLUDE / EXCLUDE"] --> B["collect.py<br/>按仓库相对路径收集"]
+    E["SOURCE_DATE_EPOCH<br/>环境变量 → commit 时间 → 当前时间"] --> C
+    B --> C["stage 目录"]
+    C --> D["artifacts/&lt;rel_path&gt;"]
+    C --> F["metadata/&lt;br&gt;metadata.json · run.json · git.json<br/>binding.json · deps.json"]
+    C --> G["sbom/sbom.cdx.json<br/>timestamp / serialNumber 归一化"]
+    G --> H["manifest/inputs.json"]
+    D --> H
+    F --> H
+    H --> I["manifest/sha256sum.txt<br/>除自身外逐文件哈希"]
+    I --> J["确定性 tar.gz<br/>mtime 统一取 SOURCE_DATE_EPOCH<br/>条目顺序显式排序"]
+    J --> K["evidence-&lt;sha7&gt;.tar.gz<br/>bundle_sha256 = 包外锚点"]
+    K --> L{"sign != 'false' ?"}
+    L -->|"是"| M["cosign sign-blob<br/>keyless + tlog"]
+    M --> N[".sigstore.json"]
+    L -->|"否"| O["无签名<br/>信任根只能来自包外 sha256"]
+```
+
+确定性那条边最容易被撞坏：SBOM 扫描器自带的 `metadata.timestamp` 与 `serialNumber`
+必须按 `SOURCE_DATE_EPOCH` 和内容重写，否则同一个 commit 两次打包就是两个哈希。
+所以 `fsutil.py` 才有独立的 `resolve_source_date_epoch` / `normalize_tarinfo` / `build_tar_gz`。
+
+### 校验：先花最便宜的力气怀疑
+
+```mermaid
+flowchart TB
+    S["bundle + 可选 .sigstore.json<br/>+ identity / issuer / expect-sha256 / expect-repo"] --> T["safe_extract<br/>拒绝对路径 · .. 穿越 · 链接<br/>解压 &gt; 4 GiB 判炸弹"]
+    T --> U["check_manifest<br/>逐文件比对 sha256sum.txt<br/>多一个 / 少一个 / 不符 都算不成立"]
+    U --> V{"给了签名 bundle？"}
+    V -->|"是"| W["signing.verify<br/>digest 绑定 · bundle 结构<br/>cosign 必须真打出 Verified OK<br/>tlog 条目 · 证书有效期相容性"]
+    V -->|"否"| X["跳过"]
+    W --> Y["_anchor<br/>expect-sha256 / expect-repo 比对"]
+    X --> Y
+    Y --> Z{"anchored 或 signature_verified ？"}
+    Z -->|"两者皆无"| R2["exit 2：包内自洽不构成证据"]
+    Z -->|"至少一条成立"| R0["exit 0：证据通过"]
+    W -.->|"签名 invalid / identity 不符"| R2
+    W -.->|"cosign 缺失 / bundle 格式坏"| R3["exit 3：工具异常"]
+    T -.->|"越界路径 / 炸弹"| R2
+    R2 --> JSON["verify-result.json<br/>ok · exit_code · error_kind<br/>manifest_verified · signature_verified<br/>anchored · anchor_warnings"]
+    R0 --> JSON
+    R3 --> JSON
+    JSON --> shell["action-verify.sh<br/>JSON → GITHUB_OUTPUT，退出码原样交还"]
+```
+
+顺序是刻意的：sha256 最便宜、攻击者也最容易满足，所以先算；签名最贵也最硬，所以放中间；
+`manifest` 单独拎出来说 —— 它和内容躺在同一个包里，通过只能证明自洽，**永远不是**充分条件。
+
+### 退出码怎么流转
+
+```mermaid
+flowchart LR
+    subgraph inner["内核（Python）"]
+        E1["UsageError"] --> C1["1 用法错"]
+        E2["EvidenceInvalid"] --> C2["2 证据无效"]
+        E3["ToolFailure"] --> C3["3 工具异常"]
+    end
+    subgraph shell2["shell 层"]
+        P["pack / rekor<br/>退出码即结论"]
+        Vv["verify<br/>恒退 0，判定在 JSON"]
+    end
+    C1 --> P
+    C2 --> P
+    C3 --> P
+    Vv --> F{"fail-on-invalid"}
+    F -->|"true"| FAIL["步骤失败，交还 0/1/2/3"]
+    F -->|"false"| WARN["只 warning，流水线继续"]
+```
+
+`verify` 之所以恒退 0，是因为 Action 拿到判定后还要登记锚点、上传制品、写 summary ——
+一个非零退出码在 `set -e` 下会把后面全掐掉。什么时候真红，由 `fail-on-invalid` 说了算，
+而不是由内核替调用方做决定。
+
+### 三条硬规矩落在代码的哪儿
+
+| 硬规矩 | 代码位置 |
+|---|---|
+| 信任根必须在包外 | `verifier._verify_once` 末尾：`not anchored and not signature.verified` → 判 2 |
+| 退出码语义不许混 | `errors.py` 三个异常基类，各自绑定 1/2/3；shell 只传导不重判 |
+| 确定性优先 | `fsutil.resolve_source_date_epoch` / `normalize_tarinfo` / `build_tar_gz`，以及 `sbom._normalize` |
+
 ## 接入自己的流水线
 
 完整示例见 [`examples/`](examples)：发版即取证（`release.yml`，照抄可用）、
